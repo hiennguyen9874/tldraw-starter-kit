@@ -36,6 +36,7 @@ export class CanvasRuntime {
 	private revision: Revision
 	private isSynchronizing = false
 	private synchronizationTimer: ReturnType<typeof setTimeout> | undefined
+	private readonly removeCanvasItemGuards: () => void
 	private readonly removeStoreListener: () => void
 	private readonly removePageHideListener: () => void
 	private readonly restoreTransactionBoundaries: () => void
@@ -49,6 +50,7 @@ export class CanvasRuntime {
 		this.revision = persisted.revision
 
 		this.hydrateEditor()
+		this.removeCanvasItemGuards = this.guardCanvasItemShapes()
 		this.restoreTransactionBoundaries = this.observeTransactionBoundaries()
 		this.removeStoreListener = editor.store.listen(
 			() => this.scheduleSynchronization(),
@@ -68,6 +70,7 @@ export class CanvasRuntime {
 	}
 
 	dispose() {
+		this.removeCanvasItemGuards()
 		this.removeStoreListener()
 		this.removePageHideListener()
 		this.restoreTransactionBoundaries()
@@ -87,6 +90,28 @@ export class CanvasRuntime {
 			}, { history: 'ignore' })
 		} finally {
 			this.isSynchronizing = false
+		}
+	}
+
+	private guardCanvasItemShapes() {
+		const removeBeforeCreate = this.editor.sideEffects.registerBeforeCreateHandler('shape', (shape) => {
+			return isSupportedShape(shape) ? canonicalizeNewCanvasItemShape(this.editor, shape) : shape
+		})
+		const removeBeforeChange = this.editor.sideEffects.registerBeforeChangeHandler(
+			'shape',
+			(shapeBefore, shapeAfter) => {
+				if (this.isSynchronizing || !isSupportedShape(shapeBefore) || !isSupportedShape(shapeAfter)) {
+					return shapeAfter
+				}
+				return isSupportedCanvasItemChange(shapeBefore, shapeAfter)
+					? canonicalizeCanvasItemChange(shapeAfter)
+					: shapeBefore
+			}
+		)
+
+		return () => {
+			removeBeforeCreate()
+			removeBeforeChange()
 		}
 	}
 
@@ -210,6 +235,60 @@ function loadPersistedCanvasRuntime(storage: CanvasRuntimeStorage): PersistedCan
 
 function isSupportedShape(shape: TLShape): shape is TLTextShape | TLGeoShape {
 	return shape.type === 'text' || (shape.type === 'geo' && SUPPORTED_GEOS.has(shape.props.geo))
+}
+
+function canonicalizeNewCanvasItemShape(
+	editor: Editor,
+	shape: TLTextShape | TLGeoShape
+): TLTextShape | TLGeoShape {
+	const defaultProps = editor.getShapeUtil(shape).getDefaultProps()
+	const props =
+		shape.type === 'text'
+			? { ...defaultProps, autoSize: true, richText: toRichText(plainText(shape.props.richText)) }
+			: {
+					...defaultProps,
+					geo: shape.props.geo,
+					w: shape.props.w,
+					h: shape.props.h,
+					richText: toRichText(plainText(shape.props.richText)),
+				}
+
+	return { ...shape, rotation: 0, opacity: 1, isLocked: false, props } as TLTextShape | TLGeoShape
+}
+
+function isSupportedCanvasItemChange(
+	shapeBefore: TLTextShape | TLGeoShape,
+	shapeAfter: TLTextShape | TLGeoShape
+) {
+	if (shapeBefore.type !== shapeAfter.type || shapeAfter.rotation !== 0) return false
+
+	for (const key of Object.keys(shapeAfter)) {
+		if (key === 'x' || key === 'y' || key === 'props') continue
+		if (!sameValue(shapeBefore[key as keyof typeof shapeBefore], shapeAfter[key as keyof typeof shapeAfter])) {
+			return false
+		}
+	}
+
+	const allowedProps = shapeAfter.type === 'text' ? new Set(['richText', 'w']) : new Set(['w', 'h', 'richText'])
+	for (const key of Object.keys(shapeAfter.props)) {
+		if (allowedProps.has(key)) continue
+		if (!sameValue(shapeBefore.props[key as keyof typeof shapeBefore.props], shapeAfter.props[key as keyof typeof shapeAfter.props])) {
+			return false
+		}
+	}
+
+	return true
+}
+
+function canonicalizeCanvasItemChange(shape: TLTextShape | TLGeoShape): TLTextShape | TLGeoShape {
+	return {
+		...shape,
+		props: { ...shape.props, richText: toRichText(plainText(shape.props.richText)) },
+	} as TLTextShape | TLGeoShape
+}
+
+function sameValue(left: unknown, right: unknown) {
+	return JSON.stringify(left) === JSON.stringify(right)
 }
 
 function shapeToCanvasItem(shape: TLTextShape | TLGeoShape): CanvasItem {

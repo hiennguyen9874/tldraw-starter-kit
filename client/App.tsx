@@ -1,4 +1,4 @@
-import { Tldraw, TLUiOverrides } from 'tldraw'
+import { GeoShapeUtil, TextShapeUtil, Tldraw, TLUiOverrides } from 'tldraw'
 import { CanvasRuntime } from './canvas/CanvasRuntime'
 
 const canvasRuntimeTools = new Set([
@@ -11,10 +11,45 @@ const canvasRuntimeTools = new Set([
 	'diamond',
 ])
 
+const unsupportedCanvasRuntimeActions = new Set([
+	'group',
+	'ungroup',
+	'frame-selection',
+	'remove-frame',
+	'fit-frame-to-content',
+	'flip-horizontal',
+	'flip-vertical',
+	'rotate-cw',
+	'rotate-ccw',
+	'bring-to-front',
+	'bring-forward',
+	'send-backward',
+	'send-to-back',
+	'paste',
+	'paste-at-cursor',
+])
+
+class CanvasGeoShapeUtil extends GeoShapeUtil {
+	override hideRotateHandle() {
+		return true
+	}
+}
+
+class CanvasTextShapeUtil extends TextShapeUtil {
+	override hideRotateHandle() {
+		return true
+	}
+}
+
 const overrides: TLUiOverrides = {
 	tools: (_editor, tools) => {
 		return Object.fromEntries(
 			Object.entries(tools).filter(([id]) => canvasRuntimeTools.has(id))
+		)
+	},
+	actions: (_editor, actions) => {
+		return Object.fromEntries(
+			Object.entries(actions).filter(([id]) => !unsupportedCanvasRuntimeActions.has(id))
 		)
 	},
 }
@@ -24,6 +59,13 @@ function App() {
 		<div className="tldraw-canvas">
 			<Tldraw
 				overrides={overrides}
+				shapeUtils={[CanvasGeoShapeUtil, CanvasTextShapeUtil]}
+				components={{
+					StylePanel: null,
+					RichTextToolbar: null,
+					ContextMenu: null,
+					ActionsMenu: null,
+				}}
 				onMount={(editor) => {
 					const runtime = new CanvasRuntime(editor)
 					const runtimeWindow = window as Window & { canvasRuntime?: CanvasRuntime }

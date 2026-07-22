@@ -1,11 +1,31 @@
 import { expect, test } from '@playwright/test'
 
 interface BrowserCanvasRuntime {
+	editor: BrowserEditor
 	getContext(): {
 		revision: number
 		document: { items: Array<{ id: string; type: string; text?: string; geo?: string }> }
 		contentBounds: { x: number; y: number; w: number; h: number } | null
 	}
+}
+
+interface BrowserEditor {
+	getCurrentPageShapes(): Array<{
+		id: string
+		type: string
+		rotation: number
+		props: Record<string, unknown>
+	}>
+	updateShapes(shapes: Array<Record<string, unknown>>): void
+	markHistoryStoppingPoint(name: string): void
+	undo(): void
+	redo(): void
+}
+
+async function getRuntimeContext(page: import('@playwright/test').Page) {
+	return page.evaluate(
+		() => (window as Window & { canvasRuntime?: BrowserCanvasRuntime }).canvasRuntime?.getContext()
+	)
 }
 
 test('opens a blank Canvas Runtime without reading legacy storage', async ({ page }) => {
@@ -98,6 +118,74 @@ test('creates supported geometric Canvas Items directly in the browser', async (
 			})
 		)
 		.toEqual({ revision: 3, geos: ['diamond', 'ellipse', 'rectangle'] })
+})
+
+test('rejects unsupported direct edits while preserving supported manipulation and history', async ({ page }) => {
+	await page.goto('/')
+	await page.getByTestId('tools.rectangle').click()
+	await page.mouse.move(100, 100)
+	await page.mouse.down()
+	await page.mouse.move(200, 180)
+	await page.mouse.up()
+
+	await expect
+		.poll(() =>
+			page.evaluate(
+				() =>
+					(window as Window & { canvasRuntime?: BrowserCanvasRuntime }).canvasRuntime?.getContext()
+						.revision
+			)
+		)
+		.toBe(1)
+
+	const rejectedEdit = await page.evaluate(() => {
+		const runtime = (window as Window & { canvasRuntime?: BrowserCanvasRuntime }).canvasRuntime
+		const editor = runtime!.editor
+		const shape = editor.getCurrentPageShapes()[0]
+		const originalColor = shape.props.color
+		editor.updateShapes([
+			{ id: shape.id, type: shape.type, rotation: Math.PI / 4, props: { ...shape.props, color: 'red' } },
+		])
+		const afterRejectedEdit = editor.getCurrentPageShapes()[0]
+		return { rotation: afterRejectedEdit.rotation, color: afterRejectedEdit.props.color, originalColor }
+	})
+	expect(rejectedEdit).toEqual({ rotation: 0, color: rejectedEdit.originalColor, originalColor: rejectedEdit.originalColor })
+
+	await page.evaluate(() => {
+		const runtime = (window as Window & { canvasRuntime?: BrowserCanvasRuntime }).canvasRuntime
+		const editor = runtime!.editor
+		const shape = editor.getCurrentPageShapes()[0]
+		editor.markHistoryStoppingPoint('supported manipulation')
+		editor.updateShapes([
+			{ id: shape.id, type: shape.type, x: 160, y: 140, props: { ...shape.props, w: 140, h: 100 } },
+		])
+	})
+	await expect.poll(() => getRuntimeContext(page)).toMatchObject({
+		revision: 2,
+		document: { items: [{ x: 160, y: 140, w: 140, h: 100 }] },
+	})
+
+	await page.evaluate(() => {
+		;(window as Window & { canvasRuntime?: BrowserCanvasRuntime }).canvasRuntime!.editor.undo()
+	})
+	await expect.poll(() => getRuntimeContext(page)).toMatchObject({
+		revision: 3,
+		document: { items: [{ x: 100, y: 100, w: 100, h: 80 }] },
+	})
+
+	await page.evaluate(() => {
+		;(window as Window & { canvasRuntime?: BrowserCanvasRuntime }).canvasRuntime!.editor.redo()
+	})
+	await expect.poll(() => getRuntimeContext(page)).toMatchObject({
+		revision: 4,
+		document: { items: [{ x: 160, y: 140, w: 140, h: 100 }] },
+	})
+
+	await page.reload()
+	await expect.poll(() => getRuntimeContext(page)).toMatchObject({
+		revision: 4,
+		document: { items: [{ x: 160, y: 140, w: 140, h: 100 }] },
+	})
 })
 
 test('assigns a unique public ID when a Canvas Item is duplicated', async ({ page }) => {
