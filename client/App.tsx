@@ -1,98 +1,41 @@
-import { useCallback, useMemo, useState } from 'react'
-import {
-	DefaultSizeStyle,
-	ErrorBoundary,
-	TLComponents,
-	Tldraw,
-	TldrawUiToastsProvider,
-	TLUiOverrides,
-} from 'tldraw'
-import { TldrawAgentApp } from './agent/TldrawAgentApp'
-import {
-	TldrawAgentAppContextProvider,
-	TldrawAgentAppProvider,
-} from './agent/TldrawAgentAppProvider'
-import { ChatPanel } from './components/ChatPanel'
-import { ChatPanelFallback } from './components/ChatPanelFallback'
-import { CustomHelperButtons } from './components/CustomHelperButtons'
-import { AgentHighlightOverlayUtil } from './overlays/AgentHighlightOverlayUtil'
-import { TargetAreaTool } from './tools/TargetAreaTool'
-import { TargetShapeTool } from './tools/TargetShapeTool'
+import { Tldraw, TLUiOverrides } from 'tldraw'
+import { CanvasRuntime } from './canvas/CanvasRuntime'
 
-// Customize tldraw's styles to play to the agent's strengths
-DefaultSizeStyle.setDefaultValue('s')
+const canvasRuntimeTools = new Set([
+	'select',
+	'hand',
+	'eraser',
+	'text',
+	'rectangle',
+	'ellipse',
+	'diamond',
+])
 
-// Custom tools for picking context items
-const tools = [TargetShapeTool, TargetAreaTool]
-const overlayUtils = [AgentHighlightOverlayUtil]
 const overrides: TLUiOverrides = {
-	tools: (editor, tools) => {
-		return {
-			...tools,
-			'target-area': {
-				id: 'target-area',
-				label: 'Pick Area',
-				kbd: 'c',
-				icon: 'tool-frame',
-				onSelect() {
-					editor.setCurrentTool('target-area')
-				},
-			},
-			'target-shape': {
-				id: 'target-shape',
-				label: 'Pick Shape',
-				kbd: 's',
-				icon: 'tool-frame',
-				onSelect() {
-					editor.setCurrentTool('target-shape')
-				},
-			},
-		}
+	tools: (_editor, tools) => {
+		return Object.fromEntries(
+			Object.entries(tools).filter(([id]) => canvasRuntimeTools.has(id))
+		)
 	},
 }
 
 function App() {
-	const [app, setApp] = useState<TldrawAgentApp | null>(null)
-
-	const handleUnmount = useCallback(() => {
-		setApp(null)
-	}, [])
-
-	// Custom components that need the agent app's React context
-	const components: TLComponents = useMemo(() => {
-		return {
-			HelperButtons: () =>
-				app && (
-					<TldrawAgentAppContextProvider app={app}>
-						<CustomHelperButtons />
-					</TldrawAgentAppContextProvider>
-				),
-		}
-	}, [app])
-
 	return (
-		<TldrawUiToastsProvider>
-			<div className="tldraw-agent-container">
-				<div className="tldraw-canvas">
-					<Tldraw
-						persistenceKey="tldraw-agent-demo"
-						tools={tools}
-						overlayUtils={overlayUtils}
-						overrides={overrides}
-						components={components}
-					>
-						<TldrawAgentAppProvider onMount={setApp} onUnmount={handleUnmount} />
-					</Tldraw>
-				</div>
-				<ErrorBoundary fallback={ChatPanelFallback}>
-					{app && (
-						<TldrawAgentAppContextProvider app={app}>
-							<ChatPanel />
-						</TldrawAgentAppContextProvider>
-					)}
-				</ErrorBoundary>
-			</div>
-		</TldrawUiToastsProvider>
+		<div className="tldraw-canvas">
+			<Tldraw
+				overrides={overrides}
+				onMount={(editor) => {
+					const runtime = new CanvasRuntime(editor)
+					;(window as Window & { canvasRuntime?: CanvasRuntime }).canvasRuntime = runtime
+					return () => {
+						runtime.dispose()
+						if ((window as Window & { canvasRuntime?: CanvasRuntime }).canvasRuntime === runtime) {
+							delete (window as Window & { canvasRuntime?: CanvasRuntime }).canvasRuntime
+						}
+					}
+				}}
+			/>
+		</div>
 	)
 }
 
