@@ -1,11 +1,11 @@
-import { AgentModelName, DEFAULT_MODEL_NAME } from '../../shared/models'
+import { AgentModelName } from '../../shared/models'
 import { AgentPrompt } from '../../shared/types/AgentPrompt'
 import { getPromptPartDefinition } from '../../shared/types/PromptPart'
 
 /**
  * Get the selected model name from a prompt using shared definitions.
  */
-export function getModelName(prompt: AgentPrompt): AgentModelName {
+export function getModelName(prompt: AgentPrompt, defaultModelName: AgentModelName): AgentModelName {
 	for (const part of Object.values(prompt)) {
 		const definition = getPromptPartDefinition(part.type)
 
@@ -16,5 +16,5 @@ export function getModelName(prompt: AgentPrompt): AgentModelName {
 		}
 	}
 
-	return DEFAULT_MODEL_NAME
+	return defaultModelName
 }

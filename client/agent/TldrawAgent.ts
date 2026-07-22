@@ -35,7 +35,7 @@ export interface PersistedAgentState {
 	chatOrigin?: { x: number; y: number }
 	todoList?: TodoItem[]
 	contextItems?: ContextItem[]
-	modelName?: AgentModelName
+	modelName?: AgentModelName | null
 	debugFlags?: AgentDebugFlags
 }
 

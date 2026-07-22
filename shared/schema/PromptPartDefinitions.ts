@@ -51,7 +51,7 @@ export interface MessagesPart {
 
 export interface ModelNamePart {
 	type: 'modelName'
-	modelName: AgentModelName
+	modelName: AgentModelName | null
 }
 
 export interface PeripheralShapesPart {

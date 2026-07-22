@@ -13,6 +13,8 @@ ANTHROPIC_API_KEY=your_anthropic_api_key_here
 GOOGLE_API_KEY=your_google_api_key_here
 OPENAI_API_KEY=your_openai_api_key_here
 OPENAI_BASE_URL=https://api.openai.com/v1
+AGENT_DEFAULT_MODEL=claude-sonnet-4-5
+AGENT_MODELS='[{"name":"claude-sonnet-4-5","id":"claude-sonnet-4-5","provider":"anthropic"},{"name":"claude-opus-4-5","id":"claude-opus-4-5","provider":"anthropic"},{"name":"gemini-3-pro-preview","id":"gemini-3-pro-preview","provider":"google","thinking":true},{"name":"gemini-3-flash-preview","id":"gemini-3-flash-preview","provider":"google"},{"name":"gpt-5.2-2025-12-11","id":"gpt-5.2-2025-12-11","provider":"openai"}]'
 ```
 
 We recommend using Anthropic for best results. Get your API key from the [Anthropic dashboard](https://console.anthropic.com/settings/keys).
@@ -583,19 +585,21 @@ agent.modelName.setModelName('gemini-3-flash-preview')
 
 To change the logic for deciding which model to use for a request, you can edit `ModelNamePartUtil`.
 
-## Support a different model
+## Configure models
 
-Add the model's definition to `AGENT_MODEL_DEFINITIONS` in `shared/models.ts`.
+Models are configured at runtime through the `AGENT_MODELS` and `AGENT_DEFAULT_MODEL` environment variables. `AGENT_MODELS` is a JSON array of model definitions:
 
-```ts
-'claude-sonnet-4-5': {
-	name: 'claude-sonnet-4-5',
-	id: 'claude-sonnet-4-5',
-	provider: 'anthropic',
-}
+```json
+[
+	{
+		"name": "claude-sonnet-4-5",
+		"id": "claude-sonnet-4-5",
+		"provider": "anthropic"
+	}
+]
 ```
 
-Add extra setup or configuration for your provider in `worker/do/AgentService.ts`.
+The configured models are used by both the model selector and the Worker. `provider` must be `openai`, `anthropic`, or `google`. Add extra provider setup in `worker/do/AgentService.ts` if needed.
 
 ## Support custom shapes
 

@@ -2,7 +2,12 @@ import { AnthropicProvider, createAnthropic } from '@ai-sdk/anthropic'
 import { createGoogleGenerativeAI, GoogleGenerativeAIProvider } from '@ai-sdk/google'
 import { createOpenAI, OpenAIProvider } from '@ai-sdk/openai'
 import { LanguageModel, ModelMessage, streamText } from 'ai'
-import { AgentModelName, getAgentModelDefinition, isValidModelName } from '../../shared/models'
+import {
+	AgentModelConfig,
+	AgentModelName,
+	getAgentModelDefinition,
+	parseAgentModelConfig,
+} from '../../shared/models'
 import { DebugPart } from '../../shared/schema/PromptPartDefinitions'
 import { AgentAction } from '../../shared/types/AgentAction'
 import { AgentPrompt } from '../../shared/types/AgentPrompt'
@@ -17,6 +22,7 @@ export class AgentService {
 	openai: OpenAIProvider
 	anthropic: AnthropicProvider
 	google: GoogleGenerativeAIProvider
+	modelConfig: AgentModelConfig
 
 	constructor(env: Environment) {
 		this.openai = createOpenAI({
@@ -25,10 +31,11 @@ export class AgentService {
 		})
 		this.anthropic = createAnthropic({ apiKey: env.ANTHROPIC_API_KEY })
 		this.google = createGoogleGenerativeAI({ apiKey: env.GOOGLE_API_KEY })
+		this.modelConfig = parseAgentModelConfig(env.AGENT_MODELS, env.AGENT_DEFAULT_MODEL)
 	}
 
 	getModel(modelName: AgentModelName): LanguageModel {
-		const modelDefinition = getAgentModelDefinition(modelName)
+		const modelDefinition = getAgentModelDefinition(this.modelConfig.models, modelName)
 		const provider = modelDefinition.provider
 		return this[provider](modelDefinition.id)
 	}
@@ -45,19 +52,15 @@ export class AgentService {
 	}
 
 	private async *streamActions(prompt: AgentPrompt): AsyncGenerator<Streaming<AgentAction>> {
-		const modelName = getModelName(prompt)
+		const modelName = getModelName(prompt, this.modelConfig.defaultModelName)
+		const modelDefinition = getAgentModelDefinition(this.modelConfig.models, modelName)
 		const model = this.getModel(modelName)
 
 		if (typeof model === 'string') {
 			throw new Error('Model is a string, not a LanguageModel')
 		}
 
-		const { modelId, provider } = model
-		if (!isValidModelName(modelId)) {
-			throw new Error(`Model ${modelId} is not in AGENT_MODEL_DEFINITIONS`)
-		}
-
-		const modelDefinition = getAgentModelDefinition(modelId)
+		const { provider } = model
 		const systemPrompt = buildSystemPrompt(prompt)
 
 		// Build messages with provider-specific options

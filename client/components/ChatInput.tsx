@@ -1,9 +1,9 @@
-import { FormEventHandler, useState } from 'react'
+import { FormEventHandler, useEffect, useState } from 'react'
 import { Editor, useValue } from 'tldraw'
 import { AtIcon } from '../../shared/icons/AtIcon'
 import { BrainIcon } from '../../shared/icons/BrainIcon'
 import { ChevronDownIcon } from '../../shared/icons/ChevronDownIcon'
-import { AGENT_MODEL_DEFINITIONS, AgentModelName } from '../../shared/models'
+import { AgentModelDefinition, AgentModelName } from '../../shared/models'
 import { useAgent } from '../agent/TldrawAgentAppProvider'
 import { ContextItemTag } from './ContextItemTag'
 import { SelectionTag } from './SelectionTag'
@@ -18,7 +18,34 @@ export function ChatInput({
 	const agent = useAgent()
 	const { editor } = agent
 	const [inputValue, setInputValue] = useState('')
+	const [models, setModels] = useState<AgentModelDefinition[]>([])
 	const isGenerating = useValue('isGenerating', () => agent.requests.isGenerating(), [agent])
+
+	useEffect(() => {
+		let isMounted = true
+
+		fetch('/models')
+			.then(async (response) => {
+				if (!response.ok) throw new Error(`Failed to load models: ${response.status}`)
+				return (await response.json()) as {
+					models: AgentModelDefinition[]
+					defaultModelName: AgentModelName
+				}
+			})
+			.then((config) => {
+				if (!isMounted) return
+				setModels(config.models)
+				const currentModelName = agent.modelName.getModelName()
+				if (!currentModelName || !config.models.some((model) => model.name === currentModelName)) {
+					agent.modelName.setModelName(config.defaultModelName)
+				}
+			})
+			.catch((error) => console.error(error))
+
+		return () => {
+			isMounted = false
+		}
+	}, [agent])
 
 	const isContextToolActive = useValue(
 		'isContextToolActive',
@@ -98,13 +125,14 @@ export function ChatInput({
 					<div className="chat-actions-left">
 						<div className="chat-model-select">
 							<div className="chat-model-select-label">
-								<BrainIcon /> {modelName}
+								<BrainIcon /> {modelName || 'Loading models…'}
 							</div>
 							<select
-								value={modelName}
+								value={modelName ?? ''}
+								disabled={models.length === 0}
 								onChange={(e) => agent.modelName.setModelName(e.target.value as AgentModelName)}
 							>
-								{Object.values(AGENT_MODEL_DEFINITIONS).map((model) => (
+								{models.map((model) => (
 									<option key={model.name} value={model.name}>
 										{model.name}
 									</option>

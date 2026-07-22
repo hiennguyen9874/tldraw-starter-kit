@@ -1,5 +1,5 @@
 import { Atom, atom } from 'tldraw'
-import { AgentModelName, DEFAULT_MODEL_NAME } from '../../../shared/models'
+import { AgentModelName } from '../../../shared/models'
 import type { TldrawAgent } from '../TldrawAgent'
 import { BaseAgentManager } from './BaseAgentManager'
 
@@ -15,7 +15,7 @@ export class AgentModelNameManager extends BaseAgentManager {
 	 * Note: Prompt part utils may ignore or override this value. See the
 	 * ModelNamePartUtil for an example.
 	 */
-	private $modelName: Atom<AgentModelName>
+	private $modelName: Atom<AgentModelName | null>
 
 	/**
 	 * Creates a new model name manager for the given agent.
@@ -23,14 +23,14 @@ export class AgentModelNameManager extends BaseAgentManager {
 	 */
 	constructor(agent: TldrawAgent) {
 		super(agent)
-		this.$modelName = atom<AgentModelName>('modelName', DEFAULT_MODEL_NAME)
+		this.$modelName = atom<AgentModelName | null>('modelName', null)
 	}
 
 	/**
 	 * Get the current model name.
 	 * @returns The currently selected model name.
 	 */
-	getModelName(): AgentModelName {
+	getModelName(): AgentModelName | null {
 		return this.$modelName.get()
 	}
 
@@ -47,6 +47,6 @@ export class AgentModelNameManager extends BaseAgentManager {
 	 * Sets the model name back to the default.
 	 */
 	reset(): void {
-		this.$modelName.set(DEFAULT_MODEL_NAME)
+		this.$modelName.set(null)
 	}
 }
