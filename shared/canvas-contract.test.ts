@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
 	CanvasDocumentSchema,
+	CanvasItemPatchSchema,
 	CanvasItemSchema,
 	CanvasToolRequestSchema,
 	CanvasToolResponseSchema,
@@ -89,6 +90,10 @@ describe('Canvas Item contract', () => {
 
 		expect(() =>
 			CanvasItemSchema.parse({ id: 'loop', type: 'arrow', fromId: 'node', toId: 'node' })
+		).toThrow()
+
+		expect(() =>
+			CanvasItemPatchSchema.parse({ type: 'arrow', fromId: 'node', toId: 'node' })
 		).toThrow()
 	})
 

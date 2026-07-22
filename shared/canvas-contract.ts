@@ -163,6 +163,12 @@ export function canonicalizeCanvasDocument(document: z.input<typeof CanvasDocume
 export const CanvasDocumentSchema = CanvasDocumentInputSchema.transform(canonicalizeCanvasDocument)
 export type CanvasDocument = z.infer<typeof CanvasDocumentSchema>
 
+const CanvasItemPatchChangeMessage = 'A Canvas Item patch must change at least one field'
+
+function hasCanvasItemPatchChange(patch: object) {
+	return Object.values(patch).some((value) => value !== undefined)
+}
+
 const TextCanvasItemPatchSchema = z
 	.strictObject({
 		type: z.literal('text'),
@@ -170,9 +176,7 @@ const TextCanvasItemPatchSchema = z
 		y: FiniteNumberSchema.optional(),
 		text: z.string().optional(),
 	})
-	.refine(({ x, y, text }) => x !== undefined || y !== undefined || text !== undefined, {
-		message: 'A Canvas Item patch must change at least one field',
-	})
+	.refine(hasCanvasItemPatchChange, { message: CanvasItemPatchChangeMessage })
 
 const GeometricCanvasItemPatchSchema = z
 	.strictObject({
@@ -183,11 +187,7 @@ const GeometricCanvasItemPatchSchema = z
 		h: PositiveNumberSchema.optional(),
 		text: z.string().optional(),
 	})
-	.refine(
-		({ x, y, w, h, text }) =>
-			x !== undefined || y !== undefined || w !== undefined || h !== undefined || text !== undefined,
-		{ message: 'A Canvas Item patch must change at least one field' }
-	)
+	.refine(hasCanvasItemPatchChange, { message: CanvasItemPatchChangeMessage })
 
 const BoundArrowCanvasItemPatchSchema = z
 	.strictObject({
@@ -195,8 +195,10 @@ const BoundArrowCanvasItemPatchSchema = z
 		fromId: CanvasItemIdSchema.optional(),
 		toId: CanvasItemIdSchema.optional(),
 	})
-	.refine(({ fromId, toId }) => fromId !== undefined || toId !== undefined, {
-		message: 'A Canvas Item patch must change at least one field',
+	.refine(hasCanvasItemPatchChange, { message: CanvasItemPatchChangeMessage })
+	.refine(({ fromId, toId }) => fromId === undefined || toId === undefined || fromId !== toId, {
+		path: ['toId'],
+		message: 'A Bound Arrow cannot bind a Canvas Item to itself',
 	})
 
 const FrameCanvasItemPatchSchema = z
@@ -204,9 +206,7 @@ const FrameCanvasItemPatchSchema = z
 		type: z.literal('frame'),
 		memberIds: z.array(CanvasItemIdSchema).optional(),
 	})
-	.refine(({ memberIds }) => memberIds !== undefined, {
-		message: 'A Canvas Item patch must change at least one field',
-	})
+	.refine(hasCanvasItemPatchChange, { message: CanvasItemPatchChangeMessage })
 
 export const CanvasItemPatchSchema = z.discriminatedUnion('type', [
 	TextCanvasItemPatchSchema,
@@ -259,28 +259,29 @@ export const ExportInputSchema = CaptureInputSchema.extend({
 })
 export type ExportInput = z.infer<typeof ExportInputSchema>
 
+const CanvasToolEnvelopeShape = {
+	version: z.literal(CANVAS_CONTRACT_VERSION),
+	id: z.string().min(1),
+}
+
 export const CanvasToolRequestSchema = z.discriminatedUnion('tool', [
 	z.strictObject({
-		version: z.literal(CANVAS_CONTRACT_VERSION),
-		id: z.string().min(1),
+		...CanvasToolEnvelopeShape,
 		tool: z.literal('canvas.get_context'),
 		input: GetContextInputSchema,
 	}),
 	z.strictObject({
-		version: z.literal(CANVAS_CONTRACT_VERSION),
-		id: z.string().min(1),
+		...CanvasToolEnvelopeShape,
 		tool: z.literal('canvas.apply_actions'),
 		input: ApplyActionsInputSchema,
 	}),
 	z.strictObject({
-		version: z.literal(CANVAS_CONTRACT_VERSION),
-		id: z.string().min(1),
+		...CanvasToolEnvelopeShape,
 		tool: z.literal('canvas.capture'),
 		input: CaptureInputSchema,
 	}),
 	z.strictObject({
-		version: z.literal(CANVAS_CONTRACT_VERSION),
-		id: z.string().min(1),
+		...CanvasToolEnvelopeShape,
 		tool: z.literal('canvas.export'),
 		input: ExportInputSchema,
 	}),
@@ -342,39 +343,39 @@ export const ExportResultSchema = z.strictObject({
 	data: z.string(),
 })
 
+const CanvasToolSuccessEnvelopeShape = {
+	...CanvasToolEnvelopeShape,
+	ok: z.literal(true),
+}
+
+const CanvasToolErrorEnvelopeShape = {
+	...CanvasToolEnvelopeShape,
+	ok: z.literal(false),
+}
+
 export const CanvasToolResponseSchema = z.union([
 	z.strictObject({
-		version: z.literal(CANVAS_CONTRACT_VERSION),
-		id: z.string().min(1),
-		ok: z.literal(true),
+		...CanvasToolSuccessEnvelopeShape,
 		tool: z.literal('canvas.get_context'),
 		result: GetContextResultSchema,
 	}),
 	z.strictObject({
-		version: z.literal(CANVAS_CONTRACT_VERSION),
-		id: z.string().min(1),
-		ok: z.literal(true),
+		...CanvasToolSuccessEnvelopeShape,
 		tool: z.literal('canvas.apply_actions'),
 		result: ApplyActionsResultSchema,
 	}),
 	z.strictObject({
-		version: z.literal(CANVAS_CONTRACT_VERSION),
-		id: z.string().min(1),
-		ok: z.literal(true),
+		...CanvasToolSuccessEnvelopeShape,
 		tool: z.literal('canvas.capture'),
 		result: CaptureResultSchema,
 	}),
 	z.strictObject({
-		version: z.literal(CANVAS_CONTRACT_VERSION),
-		id: z.string().min(1),
-		ok: z.literal(true),
+		...CanvasToolSuccessEnvelopeShape,
 		tool: z.literal('canvas.export'),
 		result: ExportResultSchema,
 	}),
 	z.strictObject({
-		version: z.literal(CANVAS_CONTRACT_VERSION),
-		id: z.string().min(1),
-		ok: z.literal(false),
+		...CanvasToolErrorEnvelopeShape,
 		tool: z.enum([
 			'canvas.get_context',
 			'canvas.apply_actions',

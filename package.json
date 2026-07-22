@@ -9,7 +9,7 @@
 		"preview": "vite preview",
 		"typecheck": "tsc --noEmit",
 		"test:unit": "vitest run",
-		"test:e2e": "playwright test --pass-with-no-tests",
+		"test:e2e": "playwright test",
 		"test": "npm run test:unit && npm run test:e2e"
 	},
 	"dependencies": {
