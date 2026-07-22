@@ -14,7 +14,7 @@ test('opens a blank Canvas Runtime without reading legacy storage', async ({ pag
 	})
 	await page.goto('/')
 
-	const context = await page.evaluate(() => {
+	const runtimeState = await page.evaluate(() => {
 		const runtime = (window as Window & { canvasRuntime?: BrowserCanvasRuntime }).canvasRuntime
 		return {
 			context: runtime?.getContext(),
@@ -23,9 +23,9 @@ test('opens a blank Canvas Runtime without reading legacy storage', async ({ pag
 		}
 	})
 
-	expect(context.context).toEqual({ revision: 0, document: { items: [] }, contentBounds: null })
-	expect(context.legacyStorage).toBe(JSON.stringify({ legacy: true }))
-	expect(context.persistedRuntime).toBeNull()
+	expect(runtimeState.context).toEqual({ revision: 0, document: { items: [] }, contentBounds: null })
+	expect(runtimeState.legacyStorage).toBe(JSON.stringify({ legacy: true }))
+	expect(runtimeState.persistedRuntime).toBeNull()
 })
 
 test('reflects direct text edits in canonical context and persisted revision', async ({ page }) => {
@@ -87,14 +87,69 @@ test('creates supported geometric Canvas Items directly in the browser', async (
 		.poll(() =>
 			page.evaluate(() => {
 				const runtime = (window as Window & { canvasRuntime?: BrowserCanvasRuntime }).canvasRuntime
-				return runtime
-					?.getContext()
-					.document.items.filter((item) => item.type === 'geo')
-					.map((item) => item.geo)
-					.sort()
+				const context = runtime?.getContext()
+				return {
+					revision: context?.revision,
+					geos: context?.document.items
+						.filter((item) => item.type === 'geo')
+						.map((item) => item.geo)
+						.sort(),
+				}
 			})
 		)
-		.toEqual(['diamond', 'ellipse', 'rectangle'])
+		.toEqual({ revision: 3, geos: ['diamond', 'ellipse', 'rectangle'] })
+})
+
+test('assigns a unique public ID when a Canvas Item is duplicated', async ({ page }) => {
+	await page.goto('/')
+	await page.getByTestId('tools.rectangle').click()
+	await page.mouse.move(100, 100)
+	await page.mouse.down()
+	await page.mouse.move(200, 180)
+	await page.mouse.up()
+
+	await expect
+		.poll(() =>
+			page.evaluate(
+				() =>
+					(window as Window & { canvasRuntime?: BrowserCanvasRuntime }).canvasRuntime?.getContext()
+						.revision
+			)
+		)
+		.toBe(1)
+
+	await page.keyboard.press('Control+d')
+
+	await expect
+		.poll(() =>
+			page.evaluate(() => {
+				const context = (
+					window as Window & { canvasRuntime?: BrowserCanvasRuntime }
+				).canvasRuntime?.getContext()
+				const ids = context?.document.items.map((item) => item.id) ?? []
+				return { revision: context?.revision, itemCount: ids.length, uniqueIds: new Set(ids).size }
+			})
+		)
+		.toEqual({ revision: 2, itemCount: 2, uniqueIds: 2 })
+})
+
+test('persists an edit when the page reloads before trailing synchronization', async ({ page }) => {
+	await page.goto('/')
+	await page.getByTestId('tools.rectangle').click()
+	await page.mouse.move(100, 100)
+	await page.mouse.down()
+	await page.mouse.move(200, 180)
+	await page.mouse.up()
+	await page.reload()
+
+	await expect
+		.poll(() =>
+			page.evaluate(
+				() =>
+					(window as Window & { canvasRuntime?: BrowserCanvasRuntime }).canvasRuntime?.getContext()
+			)
+		)
+		.toMatchObject({ revision: 1, document: { items: [{ type: 'geo', geo: 'rectangle' }] } })
 })
 
 test('validates and canonicalizes the public Canvas Item contract in the browser', async ({ page }) => {

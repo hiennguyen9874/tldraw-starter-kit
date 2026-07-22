@@ -37,6 +37,8 @@ export class CanvasRuntime {
 	private isSynchronizing = false
 	private synchronizationTimer: ReturnType<typeof setTimeout> | undefined
 	private readonly removeStoreListener: () => void
+	private readonly removePageHideListener: () => void
+	private readonly restoreTransactionBoundaries: () => void
 
 	constructor(
 		private readonly editor: Editor,
@@ -47,10 +49,14 @@ export class CanvasRuntime {
 		this.revision = persisted.revision
 
 		this.hydrateEditor()
+		this.restoreTransactionBoundaries = this.observeTransactionBoundaries()
 		this.removeStoreListener = editor.store.listen(
 			() => this.scheduleSynchronization(),
 			{ source: 'user', scope: 'document' }
 		)
+		const handlePageHide = () => this.flushSynchronization()
+		window.addEventListener('pagehide', handlePageHide)
+		this.removePageHideListener = () => window.removeEventListener('pagehide', handlePageHide)
 	}
 
 	getContext() {
@@ -63,7 +69,9 @@ export class CanvasRuntime {
 
 	dispose() {
 		this.removeStoreListener()
-		if (this.synchronizationTimer) clearTimeout(this.synchronizationTimer)
+		this.removePageHideListener()
+		this.restoreTransactionBoundaries()
+		this.flushSynchronization()
 	}
 
 	private hydrateEditor() {
@@ -82,13 +90,42 @@ export class CanvasRuntime {
 		}
 	}
 
+	private observeTransactionBoundaries() {
+		// Store changes arrive per frame or keystroke; history boundaries define one direct-edit undo step.
+		const originalMark = this.editor.markHistoryStoppingPoint
+		const originalUndo = this.editor.undo
+		const originalRedo = this.editor.redo
+
+		this.editor.markHistoryStoppingPoint = (name) => {
+			this.flushSynchronization()
+			return originalMark.call(this.editor, name)
+		}
+		this.editor.undo = () => {
+			this.flushSynchronization()
+			return originalUndo.call(this.editor)
+		}
+		this.editor.redo = () => {
+			this.flushSynchronization()
+			return originalRedo.call(this.editor)
+		}
+
+		return () => {
+			this.editor.markHistoryStoppingPoint = originalMark
+			this.editor.undo = originalUndo
+			this.editor.redo = originalRedo
+		}
+	}
+
 	private scheduleSynchronization() {
 		if (this.isSynchronizing) return
 		if (this.synchronizationTimer) clearTimeout(this.synchronizationTimer)
-		this.synchronizationTimer = setTimeout(() => {
-			this.synchronizationTimer = undefined
-			this.synchronizeFromEditor()
-		}, 100)
+		this.synchronizationTimer = setTimeout(() => this.flushSynchronization(), 100)
+	}
+
+	private flushSynchronization() {
+		if (this.synchronizationTimer) clearTimeout(this.synchronizationTimer)
+		this.synchronizationTimer = undefined
+		this.synchronizeFromEditor()
 	}
 
 	private synchronizeFromEditor() {
@@ -104,25 +141,32 @@ export class CanvasRuntime {
 				this.editor.run(() => this.editor.deleteShapes(unsupportedShapeIds), { history: 'ignore' })
 			}
 
-			const supportedShapes = this.editor.getCurrentPageShapes().filter(isSupportedShape)
-			const shapesWithoutPublicIds = supportedShapes.filter((shape) => !getPublicId(shape))
-			if (shapesWithoutPublicIds.length > 0) {
+			const supportedShapes = this.getSupportedShapes()
+			const publicIds = new Set<string>()
+			const shapesNeedingPublicIds = supportedShapes.filter((shape) => {
+				const publicId = getPublicId(shape)
+				if (!publicId || publicIds.has(publicId)) return true
+				publicIds.add(publicId)
+				return false
+			})
+			if (shapesNeedingPublicIds.length > 0) {
 				this.editor.run(() => {
 					this.editor.updateShapes(
-						shapesWithoutPublicIds.map((shape) => ({
-							id: shape.id,
-							type: shape.type,
-							meta: { ...shape.meta, canvasItemId: publicIdForShape(shape) },
-						}))
+						shapesNeedingPublicIds.map((shape) => {
+							const publicId = uniquePublicIdForShape(shape, publicIds)
+							publicIds.add(publicId)
+							return {
+								id: shape.id,
+								type: shape.type,
+								meta: { ...shape.meta, canvasItemId: publicId },
+							}
+						})
 					)
 				}, { history: 'ignore' })
 			}
 
 			const document = CanvasDocumentSchema.parse({
-				items: this.editor
-					.getCurrentPageShapes()
-					.filter(isSupportedShape)
-					.map(shapeToCanvasItem),
+				items: this.getSupportedShapes().map(shapeToCanvasItem),
 			})
 			if (JSON.stringify(document) === JSON.stringify(this.document)) return
 
@@ -137,10 +181,12 @@ export class CanvasRuntime {
 		}
 	}
 
+	private getSupportedShapes() {
+		return this.editor.getCurrentPageShapes().filter(isSupportedShape)
+	}
+
 	private getContentBounds() {
-		const bounds = this.editor.getShapesPageBounds(
-			this.editor.getCurrentPageShapes().filter(isSupportedShape).map((shape) => shape.id)
-		)
+		const bounds = this.editor.getShapesPageBounds(this.getSupportedShapes().map((shape) => shape.id))
 		return bounds ? { x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h } : null
 	}
 }
@@ -216,8 +262,12 @@ function getPublicId(shape: TLShape) {
 	return typeof id === 'string' && id.length > 0 ? id : null
 }
 
-function publicIdForShape(shape: TLShape) {
-	return `canvas-${shape.id.slice('shape:'.length)}`
+function uniquePublicIdForShape(shape: TLShape, usedIds: ReadonlySet<string>) {
+	const baseId = `canvas-${shape.id.slice('shape:'.length)}`
+	let id = baseId
+	let suffix = 2
+	while (usedIds.has(id)) id = `${baseId}-${suffix++}`
+	return id
 }
 
 function plainText(richText: unknown): string {

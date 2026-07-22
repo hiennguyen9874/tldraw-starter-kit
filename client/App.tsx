@@ -26,12 +26,11 @@ function App() {
 				overrides={overrides}
 				onMount={(editor) => {
 					const runtime = new CanvasRuntime(editor)
-					;(window as Window & { canvasRuntime?: CanvasRuntime }).canvasRuntime = runtime
+					const runtimeWindow = window as Window & { canvasRuntime?: CanvasRuntime }
+					runtimeWindow.canvasRuntime = runtime
 					return () => {
 						runtime.dispose()
-						if ((window as Window & { canvasRuntime?: CanvasRuntime }).canvasRuntime === runtime) {
-							delete (window as Window & { canvasRuntime?: CanvasRuntime }).canvasRuntime
-						}
+						if (runtimeWindow.canvasRuntime === runtime) delete runtimeWindow.canvasRuntime
 					}
 				}}
 			/>
