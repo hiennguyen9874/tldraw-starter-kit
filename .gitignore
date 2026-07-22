@@ -7,3 +7,5 @@ node_modules
 .wrangler/
 .tsbuild/
 dist/
+CODING_AGENT_MIGRATE.md
+CURRENT_ARCHITECTURE.md
