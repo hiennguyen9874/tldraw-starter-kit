@@ -148,7 +148,7 @@ test('applies a forward-referenced Canvas Item batch through the real MCP bridge
 	})
 })
 
-test('deletes direct nodes with their Bound Arrows and detaches them from frames', async ({
+test('deletes direct Canvas Items, including multi-selections, through shared actions', async ({
 	page,
 	mcpCanvas: { call, context },
 }) => {
@@ -177,7 +177,7 @@ test('deletes direct nodes with their Bound Arrows and detaches them from frames
 	await page.mouse.click(120, 120)
 	await page.keyboard.press('Delete')
 
-	await expect.poll(() => context('direct-delete')).toMatchObject({
+	await expect.poll(() => context('direct-delete-single')).toMatchObject({
 		result: {
 			structuredContent: {
 				revision: 2,
@@ -187,6 +187,18 @@ test('deletes direct nodes with their Bound Arrows and detaches them from frames
 						{ id: 'node-b', type: 'geo' },
 					],
 				},
+			},
+		},
+	})
+
+	await page.keyboard.press('Control+a')
+	await page.keyboard.press('Delete')
+
+	await expect.poll(() => context('direct-delete-multiple')).toMatchObject({
+		result: {
+			structuredContent: {
+				revision: 3,
+				document: { items: [] },
 			},
 		},
 	})

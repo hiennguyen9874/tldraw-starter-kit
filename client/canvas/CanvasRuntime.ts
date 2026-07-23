@@ -149,13 +149,24 @@ export class CanvasRuntime {
 					: shapeBefore
 			}
 		)
-		const removeBeforeDelete = this.editor.sideEffects.registerBeforeDeleteHandler('shape', (shape) => {
-			if (this.isSynchronizing || this.isReplayingHistory || !isSupportedShape(shape)) return
-			const id = getPublicId(shape)
-			if (!id) return false
-
-			const proposed = proposeCanvasActions(this.document, [{ type: 'delete', id }])
-			if ('code' in proposed) return false
+		const pendingDeleteIds = new Set<string>()
+		let isDirectDeleteScheduled = false
+		let isDisposed = false
+		const flushDirectDelete = () => {
+			isDirectDeleteScheduled = false
+			if (isDisposed || pendingDeleteIds.size === 0) return
+			const itemsById = new Map(this.document.items.map((item) => [item.id, item]))
+			const ids = [...pendingDeleteIds].sort(
+				(left, right) =>
+					Number(itemsById.get(right)?.type === 'arrow') -
+					Number(itemsById.get(left)?.type === 'arrow')
+			)
+			pendingDeleteIds.clear()
+			const proposed = proposeCanvasActions(
+				this.document,
+				ids.map((id) => ({ type: 'delete' as const, id }))
+			)
+			if ('code' in proposed) return
 
 			this.isSynchronizing = true
 			try {
@@ -163,10 +174,22 @@ export class CanvasRuntime {
 			} finally {
 				this.isSynchronizing = false
 			}
+		}
+		const removeBeforeDelete = this.editor.sideEffects.registerBeforeDeleteHandler('shape', (shape) => {
+			if (this.isSynchronizing || this.isReplayingHistory || !isSupportedShape(shape)) return
+			const id = getPublicId(shape)
+			if (!id) return false
+
+			pendingDeleteIds.add(id)
+			if (!isDirectDeleteScheduled) {
+				isDirectDeleteScheduled = true
+				queueMicrotask(flushDirectDelete)
+			}
 			return false
 		})
 
 		return () => {
+			isDisposed = true
 			removeBeforeCreate()
 			removeBeforeChange()
 			removeBeforeDelete()
