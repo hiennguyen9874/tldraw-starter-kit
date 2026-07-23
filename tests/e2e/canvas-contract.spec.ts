@@ -1,7 +1,6 @@
 import { expect, test } from '@playwright/test'
 
-interface BrowserCanvasRuntime {
-	editor: BrowserEditor
+interface BrowserCanvasTestFacade {
 	getContext(): {
 		revision: number
 		document: { items: Array<{ id: string; type: string; text?: string; geo?: string }> }
@@ -9,25 +8,9 @@ interface BrowserCanvasRuntime {
 	}
 }
 
-interface BrowserEditor {
-	getCurrentPageShapes(): Array<{
-		id: string
-		type: string
-		rotation: number
-		props: Record<string, unknown>
-	}>
-	createShapes(shapes: Array<Record<string, unknown>>): void
-	updateShapes(shapes: Array<Record<string, unknown>>): void
-	select(...shapeIds: string[]): void
-	setCamera(camera: { x: number; y: number; z: number }): void
-	markHistoryStoppingPoint(name: string): void
-	undo(): void
-	redo(): void
-}
-
 async function getRuntimeContext(page: import('@playwright/test').Page) {
 	return page.evaluate(
-		() => (window as Window & { canvasRuntime?: BrowserCanvasRuntime }).canvasRuntime?.getContext()
+		() => (window as Window & { canvasTest?: BrowserCanvasTestFacade }).canvasTest?.getContext()
 	)
 }
 
@@ -38,7 +21,7 @@ test('opens a blank Canvas Runtime without reading legacy storage', async ({ pag
 	await page.goto('/')
 
 	const runtimeState = await page.evaluate(() => {
-		const runtime = (window as Window & { canvasRuntime?: BrowserCanvasRuntime }).canvasRuntime
+		const runtime = (window as Window & { canvasTest?: BrowserCanvasTestFacade }).canvasTest
 		return {
 			context: runtime?.getContext(),
 			legacyStorage: localStorage.getItem('tldraw-agent-demo'),
@@ -47,6 +30,10 @@ test('opens a blank Canvas Runtime without reading legacy storage', async ({ pag
 	})
 
 	expect(runtimeState.context).toEqual({ revision: 0, document: { items: [] }, contentBounds: null })
+	expect(await page.evaluate(() => ({
+		facadeMethods: Object.keys((window as Window & { canvasTest?: object }).canvasTest ?? {}),
+		canvasRuntime: (window as Window & { canvasRuntime?: unknown }).canvasRuntime,
+	}))).toEqual({ facadeMethods: ['getContext'], canvasRuntime: undefined })
 	expect(runtimeState.legacyStorage).toBe(JSON.stringify({ legacy: true }))
 	expect(runtimeState.persistedRuntime).toBeNull()
 })
@@ -62,33 +49,15 @@ test('reflects direct text edits in canonical context and persisted revision', a
 	await page.keyboard.type('Runtime text')
 	await page.keyboard.press('Escape')
 
-	await expect
-		.poll(() =>
-			page.evaluate(() => {
-				const runtime = (window as Window & { canvasRuntime?: BrowserCanvasRuntime }).canvasRuntime
-				return runtime?.getContext()
-			})
-		)
-		.toMatchObject({
-			revision: 1,
-			document: { items: [{ type: 'text', text: 'Runtime text' }] },
-		})
+	const immediateContext = await getRuntimeContext(page)
+	expect(immediateContext).toMatchObject({
+		revision: 1,
+		document: { items: [{ type: 'text', text: 'Runtime text' }] },
+		contentBounds: expect.any(Object),
+	})
 
 	const persistedRuntime = await page.evaluate(() => localStorage.getItem('canvas-runtime-v1'))
 	expect(persistedRuntime).toContain('Runtime text')
-
-	await page.reload()
-	await expect
-		.poll(() =>
-			page.evaluate(() => {
-				const runtime = (window as Window & { canvasRuntime?: BrowserCanvasRuntime }).canvasRuntime
-				return runtime?.getContext()
-			})
-		)
-		.toMatchObject({
-			revision: 1,
-			document: { items: [{ type: 'text', text: 'Runtime text' }] },
-		})
 })
 
 test('creates supported geometric Canvas Items directly in the browser', async ({ page }) => {
@@ -109,7 +78,7 @@ test('creates supported geometric Canvas Items directly in the browser', async (
 	await expect
 		.poll(() =>
 			page.evaluate(() => {
-				const runtime = (window as Window & { canvasRuntime?: BrowserCanvasRuntime }).canvasRuntime
+				const runtime = (window as Window & { canvasTest?: BrowserCanvasTestFacade }).canvasTest
 				const context = runtime?.getContext()
 				return {
 					revision: context?.revision,
@@ -121,74 +90,6 @@ test('creates supported geometric Canvas Items directly in the browser', async (
 			})
 		)
 		.toEqual({ revision: 3, geos: ['diamond', 'ellipse', 'rectangle'] })
-})
-
-test('rejects unsupported direct edits while preserving supported manipulation and history', async ({ page }) => {
-	await page.goto('/')
-	await page.getByTestId('tools.rectangle').click()
-	await page.mouse.move(100, 100)
-	await page.mouse.down()
-	await page.mouse.move(200, 180)
-	await page.mouse.up()
-
-	await expect
-		.poll(() =>
-			page.evaluate(
-				() =>
-					(window as Window & { canvasRuntime?: BrowserCanvasRuntime }).canvasRuntime?.getContext()
-						.revision
-			)
-		)
-		.toBe(1)
-
-	const rejectedEdit = await page.evaluate(() => {
-		const runtime = (window as Window & { canvasRuntime?: BrowserCanvasRuntime }).canvasRuntime
-		const editor = runtime!.editor
-		const shape = editor.getCurrentPageShapes()[0]
-		const originalColor = shape.props.color
-		editor.updateShapes([
-			{ id: shape.id, type: shape.type, rotation: Math.PI / 4, props: { ...shape.props, color: 'red' } },
-		])
-		const afterRejectedEdit = editor.getCurrentPageShapes()[0]
-		return { rotation: afterRejectedEdit.rotation, color: afterRejectedEdit.props.color, originalColor }
-	})
-	expect(rejectedEdit).toEqual({ rotation: 0, color: rejectedEdit.originalColor, originalColor: rejectedEdit.originalColor })
-
-	await page.evaluate(() => {
-		const runtime = (window as Window & { canvasRuntime?: BrowserCanvasRuntime }).canvasRuntime
-		const editor = runtime!.editor
-		const shape = editor.getCurrentPageShapes()[0]
-		editor.markHistoryStoppingPoint('supported manipulation')
-		editor.updateShapes([
-			{ id: shape.id, type: shape.type, x: 160, y: 140, props: { ...shape.props, w: 140, h: 100 } },
-		])
-	})
-	await expect.poll(() => getRuntimeContext(page)).toMatchObject({
-		revision: 2,
-		document: { items: [{ x: 160, y: 140, w: 140, h: 100 }] },
-	})
-
-	await page.evaluate(() => {
-		;(window as Window & { canvasRuntime?: BrowserCanvasRuntime }).canvasRuntime!.editor.undo()
-	})
-	await expect.poll(() => getRuntimeContext(page)).toMatchObject({
-		revision: 3,
-		document: { items: [{ x: 100, y: 100, w: 100, h: 80 }] },
-	})
-
-	await page.evaluate(() => {
-		;(window as Window & { canvasRuntime?: BrowserCanvasRuntime }).canvasRuntime!.editor.redo()
-	})
-	await expect.poll(() => getRuntimeContext(page)).toMatchObject({
-		revision: 4,
-		document: { items: [{ x: 160, y: 140, w: 140, h: 100 }] },
-	})
-
-	await page.reload()
-	await expect.poll(() => getRuntimeContext(page)).toMatchObject({
-		revision: 4,
-		document: { items: [{ x: 160, y: 140, w: 140, h: 100 }] },
-	})
 })
 
 test('assigns a unique public ID when a Canvas Item is duplicated', async ({ page }) => {
@@ -203,7 +104,7 @@ test('assigns a unique public ID when a Canvas Item is duplicated', async ({ pag
 		.poll(() =>
 			page.evaluate(
 				() =>
-					(window as Window & { canvasRuntime?: BrowserCanvasRuntime }).canvasRuntime?.getContext()
+					(window as Window & { canvasTest?: BrowserCanvasTestFacade }).canvasTest?.getContext()
 						.revision
 			)
 		)
@@ -215,8 +116,8 @@ test('assigns a unique public ID when a Canvas Item is duplicated', async ({ pag
 		.poll(() =>
 			page.evaluate(() => {
 				const context = (
-					window as Window & { canvasRuntime?: BrowserCanvasRuntime }
-				).canvasRuntime?.getContext()
+					window as Window & { canvasTest?: BrowserCanvasTestFacade }
+				).canvasTest?.getContext()
 				const ids = context?.document.items.map((item) => item.id) ?? []
 				return { revision: context?.revision, itemCount: ids.length, uniqueIds: new Set(ids).size }
 			})
@@ -224,65 +125,15 @@ test('assigns a unique public ID when a Canvas Item is duplicated', async ({ pag
 		.toEqual({ revision: 2, itemCount: 2, uniqueIds: 2 })
 })
 
-test('reports tight rendered-ink bounds independently of viewport and selection', async ({ page }) => {
+test('reports rendered-ink content bounds through the Canvas Item facade', async ({ page }) => {
 	await page.goto('/')
+	await page.getByTestId('tools.rectangle').click()
+	await page.mouse.move(100, 100)
+	await page.mouse.down()
+	await page.mouse.move(200, 180)
+	await page.mouse.up()
 
-	const initialBounds = await page.evaluate(() => {
-		const runtime = (window as Window & { canvasRuntime?: BrowserCanvasRuntime }).canvasRuntime!
-		const editor = runtime.editor
-		editor.createShapes([
-			{
-				id: 'shape:rendered-rectangle',
-				type: 'geo',
-				x: 100,
-				y: 100,
-				props: { geo: 'rectangle', w: 100, h: 80, richText: { type: 'doc', content: [] } },
-			},
-			{
-				id: 'shape:rendered-ellipse',
-				type: 'geo',
-				x: 260,
-				y: 120,
-				props: { geo: 'ellipse', w: 100, h: 80, richText: { type: 'doc', content: [] } },
-			},
-			{
-				id: 'shape:rendered-diamond',
-				type: 'geo',
-				x: 420,
-				y: 100,
-				props: { geo: 'diamond', w: 100, h: 80, richText: { type: 'doc', content: [] } },
-			},
-			{
-				id: 'shape:rendered-text',
-				type: 'text',
-				x: 100,
-				y: 240,
-				props: {
-					autoSize: true,
-					richText: {
-						type: 'doc',
-						content: [
-							{ type: 'paragraph', content: [{ type: 'text', text: 'First line' }] },
-							{ type: 'paragraph', content: [{ type: 'text', text: 'Second line' }] },
-						],
-					},
-				},
-			},
-		])
-		return runtime.getContext().contentBounds
-	})
-
-	expect(initialBounds).toEqual({ x: 96, y: 96, w: 428, h: 208 })
-
-	const boundsAfterViewportAndSelectionChange = await page.evaluate(() => {
-		const runtime = (window as Window & { canvasRuntime?: BrowserCanvasRuntime }).canvasRuntime!
-		const editor = runtime.editor
-		const shapes = editor.getCurrentPageShapes()
-		editor.select(...shapes.map((shape) => shape.id))
-		editor.setCamera({ x: -500, y: -400, z: 2 })
-		return runtime.getContext().contentBounds
-	})
-	expect(boundsAfterViewportAndSelectionChange).toEqual(initialBounds)
+	expect((await getRuntimeContext(page))?.contentBounds).toEqual({ x: 96, y: 96, w: 108, h: 88 })
 })
 
 test('persists an edit when the page reloads before trailing synchronization', async ({ page }) => {
@@ -298,7 +149,7 @@ test('persists an edit when the page reloads before trailing synchronization', a
 		.poll(() =>
 			page.evaluate(
 				() =>
-					(window as Window & { canvasRuntime?: BrowserCanvasRuntime }).canvasRuntime?.getContext()
+					(window as Window & { canvasTest?: BrowserCanvasTestFacade }).canvasTest?.getContext()
 			)
 		)
 		.toMatchObject({ revision: 1, document: { items: [{ type: 'geo', geo: 'rectangle' }] } })

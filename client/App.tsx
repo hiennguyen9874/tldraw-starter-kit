@@ -68,11 +68,16 @@ function App() {
 				}}
 				onMount={(editor) => {
 					const runtime = new CanvasRuntime(editor)
-					const runtimeWindow = window as Window & { canvasRuntime?: CanvasRuntime }
-					runtimeWindow.canvasRuntime = runtime
+					const testWindow = window as Window & {
+						canvasTest?: { getContext: () => ReturnType<CanvasRuntime['getContext']> }
+					}
+					const testFacade = import.meta.env.DEV
+						? { getContext: () => runtime.getContext() }
+						: undefined
+					if (testFacade) testWindow.canvasTest = testFacade
 					return () => {
 						runtime.dispose()
-						if (runtimeWindow.canvasRuntime === runtime) delete runtimeWindow.canvasRuntime
+						if (testFacade && testWindow.canvasTest === testFacade) delete testWindow.canvasTest
 					}
 				}}
 			/>

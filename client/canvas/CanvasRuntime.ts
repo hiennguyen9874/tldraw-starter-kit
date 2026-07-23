@@ -64,6 +64,7 @@ export class CanvasRuntime {
 	}
 
 	getContext() {
+		this.flushSynchronization()
 		return GetContextResultSchema.parse({
 			revision: this.revision,
 			document: this.document,
@@ -82,9 +83,16 @@ export class CanvasRuntime {
 	private hydrateEditor() {
 		this.isSynchronizing = true
 		try {
+			const existingPublicIds = new Set(
+				this.getSupportedShapes().flatMap((shape) => {
+					const publicId = getPublicId(shape)
+					return publicId ? [publicId] : []
+				})
+			)
 			this.editor.run(() => {
 				this.editor.createShapes(
 					this.document.items.flatMap((item) => {
+						if (existingPublicIds.has(item.id)) return []
 						const shape = canvasItemToShape(item)
 						return shape ? [shape] : []
 					})
