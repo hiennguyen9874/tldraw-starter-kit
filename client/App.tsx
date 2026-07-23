@@ -44,8 +44,11 @@ class CanvasTextShapeUtil extends TextShapeUtil {
 	}
 }
 
-type RuntimeRequest = Extract<CanvasToolRequest, { tool: 'canvas.apply_actions' | 'canvas.capture' }>
-type RuntimeOutcome = ReturnType<CanvasRuntime['applyActions']> | Awaited<ReturnType<CanvasRuntime['capture']>>
+type RuntimeRequest = Extract<CanvasToolRequest, { tool: 'canvas.apply_actions' | 'canvas.capture' | 'canvas.export' }>
+type RuntimeOutcome =
+	| ReturnType<CanvasRuntime['applyActions']>
+	| Awaited<ReturnType<CanvasRuntime['capture']>>
+	| Awaited<ReturnType<CanvasRuntime['export']>>
 
 function runtimeResponse(request: RuntimeRequest, outcome: RuntimeOutcome): CanvasToolResponse {
 	return 'code' in outcome
@@ -100,13 +103,10 @@ function App() {
 							if (request.tool === 'canvas.capture') {
 								return runtimeResponse(request, await runtime.capture(request.input))
 							}
-							return {
-								version: 1,
-								id: request.id,
-								tool: request.tool,
-								ok: false as const,
-								error: { code: 'validation' as const, issues: [{ message: 'Unsupported Canvas Runtime tool' }] },
+							if (request.tool === 'canvas.export') {
+								return runtimeResponse(request, await runtime.export(request.input))
 							}
+							throw new Error(`Unsupported Canvas Runtime tool: ${String(request)}`)
 						},
 						setBridgeStatus
 					)

@@ -110,6 +110,30 @@ async function handleMcpRequest(request) {
 						},
 					},
 				},
+				{
+					name: 'canvas.export',
+					description: 'Export fixed-1x PNG or standalone SVG Canvas Runtime diagram data.',
+					inputSchema: {
+						type: 'object',
+						required: ['format'],
+						additionalProperties: false,
+						properties: {
+							format: { type: 'string', enum: ['png', 'svg'] },
+							expectedRevision: { type: 'integer', minimum: 0 },
+							rect: {
+								type: 'object',
+								additionalProperties: false,
+								required: ['x', 'y', 'w', 'h'],
+								properties: {
+									x: { type: 'number' },
+									y: { type: 'number' },
+									w: { type: 'number', exclusiveMinimum: 0 },
+									h: { type: 'number', exclusiveMinimum: 0 },
+								},
+							},
+						},
+					},
+				},
 			],
 		})
 	}
@@ -125,7 +149,10 @@ async function handleMcpRequest(request) {
 	if (tool === 'canvas.capture' && !isCaptureInput(input)) {
 		return writeMcpResult(request.id, toolError('validation', 'canvas.capture requires an object input'))
 	}
-	if (tool !== 'canvas.get_context' && tool !== 'canvas.apply_actions' && tool !== 'canvas.capture') {
+	if (tool === 'canvas.export' && !isExportInput(input)) {
+		return writeMcpResult(request.id, toolError('validation', 'canvas.export requires a PNG or SVG format'))
+	}
+	if (tool !== 'canvas.get_context' && tool !== 'canvas.apply_actions' && tool !== 'canvas.capture' && tool !== 'canvas.export') {
 		return writeMcpResult(request.id, toolError('validation', 'Unknown Canvas Runtime tool'))
 	}
 	if (!activeRuntime?.registered) return writeMcpResult(request.id, toolError('unavailable'))
@@ -297,7 +324,8 @@ function isRuntimeResponse(response) {
 		typeof response.id !== 'string' ||
 		(response.tool !== 'canvas.get_context' &&
 			response.tool !== 'canvas.apply_actions' &&
-			response.tool !== 'canvas.capture') ||
+			response.tool !== 'canvas.capture' &&
+			response.tool !== 'canvas.export') ||
 		typeof response.ok !== 'boolean'
 	) {
 		return false
@@ -321,6 +349,10 @@ function isApplyActionsInput(input) {
 
 function isCaptureInput(input) {
 	return isRecord(input)
+}
+
+function isExportInput(input) {
+	return isRecord(input) && (input.format === 'png' || input.format === 'svg')
 }
 
 function settlePending(runtime, code) {

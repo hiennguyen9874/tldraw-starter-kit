@@ -12,8 +12,11 @@ import {
 import {
 	ApplyActionsInput,
 	ApplyActionsResultSchema,
+	BusinessError,
 	CaptureInput,
 	CaptureResultSchema,
+	ExportInput,
+	ExportResultSchema,
 	CanvasDocument,
 	CanvasDocumentSchema,
 	CanvasItem,
@@ -45,6 +48,10 @@ interface PersistedCanvasRuntime {
 	revision: Revision
 	document: CanvasDocument
 }
+
+type RenderPreparation =
+	| { revision: Revision; rect: Rect }
+	| Extract<BusinessError, { code: 'stale_revision' | 'validation' }>
 
 export class CanvasRuntime {
 	private document: CanvasDocument
@@ -108,40 +115,33 @@ export class CanvasRuntime {
 	}
 
 	async capture(input: CaptureInput) {
-		this.flushSynchronization()
-		const observedRevision = this.revision
-		if (input.expectedRevision !== undefined && input.expectedRevision !== observedRevision) {
-			return {
-				code: 'stale_revision' as const,
-				expectedRevision: input.expectedRevision,
-				currentRevision: observedRevision,
-			}
-		}
+		const prepared = this.prepareRender(input)
+		if ('code' in prepared) return prepared
 
-		const rect = input.rect ?? this.getDefaultCaptureRect()
-		if (rect.w * rect.h > MAX_RENDER_AREA) {
-			return captureValidationError(`Render area must not exceed ${MAX_RENDER_AREA} pixels`, 'rect')
-		}
-
-		const png = await this.renderCapture(rect)
-		if (png.size > MAX_ENCODED_ARTIFACT_BYTES) {
-			return captureValidationError(
-				`PNG must not exceed ${MAX_ENCODED_ARTIFACT_BYTES} bytes`,
-				'content.data'
-			)
-		}
-		const data = await blobToBase64(png)
-		if (data.length > MAX_ENCODED_ARTIFACT_BYTES) {
-			return captureValidationError(
-				`Encoded PNG response must not exceed ${MAX_ENCODED_ARTIFACT_BYTES} bytes`,
-				'content.data'
-			)
-		}
+		const png = await this.renderCapture(prepared.rect)
+		const data = await encodeArtifact(png, 'PNG', 'content.data')
+		if (typeof data !== 'string') return data
 
 		return CaptureResultSchema.parse({
-			revision: observedRevision,
-			rect,
+			revision: prepared.revision,
+			rect: prepared.rect,
 			content: { type: 'image', mimeType: 'image/png', data },
+		})
+	}
+
+	async export(input: ExportInput) {
+		const prepared = this.prepareRender(input)
+		if ('code' in prepared) return prepared
+
+		const artifact = await this.renderExport(input.format, prepared.rect)
+		const data = await encodeArtifact(artifact, input.format.toUpperCase(), 'data')
+		if (typeof data !== 'string') return data
+
+		return ExportResultSchema.parse({
+			revision: prepared.revision,
+			rect: prepared.rect,
+			mimeType: input.format === 'png' ? 'image/png' : 'image/svg+xml',
+			data,
 		})
 	}
 
@@ -153,11 +153,35 @@ export class CanvasRuntime {
 		this.flushSynchronization()
 	}
 
+	private prepareRender(input: CaptureInput): RenderPreparation {
+		this.flushSynchronization()
+		const revision = this.revision
+		if (input.expectedRevision !== undefined && input.expectedRevision !== revision) {
+			return {
+				code: 'stale_revision' as const,
+				expectedRevision: input.expectedRevision,
+				currentRevision: revision,
+			}
+		}
+
+		const rect = input.rect ?? this.getDefaultCaptureRect()
+		if (rect.w * rect.h > MAX_RENDER_AREA) {
+			return captureValidationError(`Render area must not exceed ${MAX_RENDER_AREA} pixels`, 'rect')
+		}
+		return { revision, rect }
+	}
+
 	private async renderCapture(rect: Rect) {
+		return this.renderExport('png', rect)
+	}
+
+	private async renderExport(format: ExportInput['format'], rect: Rect) {
 		const shapes = this.getSupportedShapes()
-		if (shapes.length === 0) return transparentPngBlob(rect.w, rect.h)
+		if (shapes.length === 0) {
+			return format === 'png' ? transparentPngBlob(rect.w, rect.h) : transparentSvgBlob(rect.w, rect.h)
+		}
 		const { blob } = await this.editor.toImage(shapes, {
-			format: 'png',
+			format,
 			bounds: new Box(rect.x, rect.y, rect.w, rect.h),
 			background: false,
 			padding: 0,
@@ -741,6 +765,20 @@ function captureValidationError(message: string, field: string) {
 	return { code: 'validation' as const, issues: [{ message, field }] }
 }
 
+async function encodeArtifact(blob: Blob, format: string, field: string) {
+	if (blob.size > MAX_ENCODED_ARTIFACT_BYTES) {
+		return captureValidationError(`${format} must not exceed ${MAX_ENCODED_ARTIFACT_BYTES} bytes`, field)
+	}
+	const data = await blobToBase64(blob)
+	if (data.length > MAX_ENCODED_ARTIFACT_BYTES) {
+		return captureValidationError(
+			`Encoded ${format} response must not exceed ${MAX_ENCODED_ARTIFACT_BYTES} bytes`,
+			field
+		)
+	}
+	return data
+}
+
 async function blobToBase64(blob: Blob) {
 	const bytes = new Uint8Array(await blob.arrayBuffer())
 	let binary = ''
@@ -756,6 +794,13 @@ function transparentPngBlob(width: number, height: number) {
 	canvas.height = height
 	return new Promise<Blob>((resolve, reject) =>
 		canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('Could not encode transparent PNG'))), 'image/png')
+	)
+}
+
+function transparentSvgBlob(width: number, height: number) {
+	return new Blob(
+		[`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"/>`],
+		{ type: 'image/svg+xml' }
 	)
 }
 

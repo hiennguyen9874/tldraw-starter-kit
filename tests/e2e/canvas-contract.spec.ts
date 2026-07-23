@@ -192,6 +192,90 @@ test('captures transparent Canvas Runtime PNGs through the real MCP bridge', asy
 	})
 })
 
+test('exports fixed-1x transparent PNG and standalone SVG data through the real MCP bridge', async ({
+	page,
+	mcpCanvas: { call, tool },
+}) => {
+	for (const format of ['png', 'svg'] as const) {
+		const empty = await tool(`export-empty-${format}`, 'canvas.export', { format })
+		expect(empty).toMatchObject({
+			result: {
+				structuredContent: {
+					revision: 0,
+					rect: { x: 0, y: 0, w: 1, h: 1 },
+					mimeType: format === 'png' ? 'image/png' : 'image/svg+xml',
+				},
+			},
+		})
+		const data = exportData(empty)
+		if (format === 'png') {
+			expect(pngDimensions(data)).toEqual({ width: 1, height: 1 })
+			expect(await pngPixelAlpha(page, data)).toBe(0)
+		} else {
+			expect(svgViewBox(data)).toBe('0 0 1 1')
+			expect(svgHasExternalAssets(data)).toBe(false)
+		}
+	}
+
+	await call('create-export-node', {
+		expectedRevision: 0,
+		actions: [
+			{ type: 'create', item: { id: 'node', type: 'geo', geo: 'rectangle', x: 100, y: 100, w: 100, h: 80 } },
+		],
+	})
+
+	const rect = { x: 10, y: 20, w: 30, h: 40 }
+	const png = await tool('export-png', 'canvas.export', { format: 'png', expectedRevision: 1, rect })
+	expect(png).toMatchObject({
+		result: { structuredContent: { revision: 1, rect, mimeType: 'image/png' } },
+	})
+	expect(pngDimensions(exportData(png))).toEqual({ width: 30, height: 40 })
+
+	const svg = await tool('export-svg', 'canvas.export', { format: 'svg', expectedRevision: 1, rect })
+	expect(svg).toMatchObject({
+		result: { structuredContent: { revision: 1, rect, mimeType: 'image/svg+xml' } },
+	})
+	expect(svgViewBox(exportData(svg))).toBe('10 20 30 40')
+	expect(svgHasExternalAssets(exportData(svg))).toBe(false)
+
+	expect(await tool('export-stale', 'canvas.export', { format: 'png', expectedRevision: 0 })).toMatchObject({
+		result: { isError: true, structuredContent: { error: { code: 'stale_revision', expectedRevision: 0, currentRevision: 1 } } },
+	})
+	expect(await tool('export-invalid-rect', 'canvas.export', { format: 'svg', rect: { x: 0, y: 0, w: 0, h: 1 } })).toMatchObject({
+		result: { isError: true, structuredContent: { error: { code: 'validation', issues: [{ field: 'rect.w' }] } } },
+	})
+	expect(await tool('export-oversized', 'canvas.export', { format: 'png', rect: { x: 0, y: 0, w: 4_001, h: 4_000 } })).toMatchObject({
+		result: { isError: true, structuredContent: { error: { code: 'validation', issues: [{ field: 'rect' }] } } },
+	})
+
+	await page.evaluate(() => {
+		const toBlob = HTMLCanvasElement.prototype.toBlob
+		HTMLCanvasElement.prototype.toBlob = function (callback, ...args) {
+			toBlob.call(this, (blob) => {
+				callback(blob && new Blob([blob, new Uint8Array(16 * 1024 * 1024)], { type: blob.type }))
+			}, ...args)
+		}
+	})
+	expect(await tool('export-oversized-payload', 'canvas.export', { format: 'png', rect: { x: 0, y: 0, w: 1, h: 1 } })).toMatchObject({
+		result: { isError: true, structuredContent: { error: { code: 'validation', issues: [{ field: 'data' }] } } },
+	})
+})
+
+function exportData(response: unknown) {
+	const data = (response as { result: { structuredContent: { data?: string } } }).result.structuredContent.data
+	if (!data) throw new Error('Export did not return base64 data')
+	return data
+}
+
+function svgViewBox(base64: string) {
+	return Buffer.from(base64, 'base64').toString('utf8').match(/viewBox="([^"]+)"/)?.[1]
+}
+
+function svgHasExternalAssets(base64: string) {
+	const svg = Buffer.from(base64, 'base64').toString('utf8')
+	return /(?:href|src)="(?!data:|#)[^"]+"/.test(svg) || /url\((?!['"]?(?:data:|#))/.test(svg)
+}
+
 function captureData(response: unknown) {
 	const result = (response as { result: { content: Array<{ data?: string }> } }).result
 	const data = result.content[0]?.data

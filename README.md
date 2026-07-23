@@ -29,7 +29,7 @@ Open `http://localhost:5173/` in your browser to see the app.
 
 ### Connect an external MCP client
 
-With the Vite app running, start the local bridge with `npm run canvas-mcp`. It prints a one-time Canvas Runtime URL to stderr. Open that URL in a browser; the connection credentials are removed from the address bar after registration. Configure your MCP client to run `npm run canvas-mcp` over stdio and call `canvas.get_context`.
+With the Vite app running, start the local bridge with `npm run canvas-mcp`. It prints a one-time Canvas Runtime URL to stderr. Open that URL in a browser; the connection credentials are removed from the address bar after registration. Configure your MCP client to run `npm run canvas-mcp` over stdio. It exposes `canvas.get_context`, `canvas.apply_actions`, `canvas.capture`, and `canvas.export` (fixed-1x PNG or standalone SVG data).
 
 ## Agent overview
 
