@@ -35,6 +35,8 @@ const SUPPORTED_GEOS = new Set<string>(['rectangle', 'ellipse', 'diamond'])
 const RENDERED_GEO_INK_MARGIN = 4
 const CAPTURE_PADDING = 32
 const MAX_RENDER_AREA = 16_000_000
+// tldraw clamps larger raster dimensions, which would desynchronize returned rect metadata from PNG output.
+const MAX_RENDER_DIMENSION = 8_192
 const MAX_ENCODED_ARTIFACT_BYTES = 16 * 1024 * 1024
 type CanvasShape = Parameters<Editor['createShapes']>[0][number]
 
@@ -118,7 +120,7 @@ export class CanvasRuntime {
 		const prepared = this.prepareRender(input)
 		if ('code' in prepared) return prepared
 
-		const png = await this.renderCapture(prepared.rect)
+		const png = await this.renderArtifact('png', prepared.rect)
 		const data = await encodeArtifact(png, 'PNG', 'content.data')
 		if (typeof data !== 'string') return data
 
@@ -133,7 +135,7 @@ export class CanvasRuntime {
 		const prepared = this.prepareRender(input)
 		if ('code' in prepared) return prepared
 
-		const artifact = await this.renderExport(input.format, prepared.rect)
+		const artifact = await this.renderArtifact(input.format, prepared.rect)
 		const data = await encodeArtifact(artifact, input.format.toUpperCase(), 'data')
 		if (typeof data !== 'string') return data
 
@@ -165,17 +167,19 @@ export class CanvasRuntime {
 		}
 
 		const rect = input.rect ?? this.getDefaultCaptureRect()
+		if (rect.w > MAX_RENDER_DIMENSION) {
+			return renderValidationError(`Render width must not exceed ${MAX_RENDER_DIMENSION} pixels`, 'rect.w')
+		}
+		if (rect.h > MAX_RENDER_DIMENSION) {
+			return renderValidationError(`Render height must not exceed ${MAX_RENDER_DIMENSION} pixels`, 'rect.h')
+		}
 		if (rect.w * rect.h > MAX_RENDER_AREA) {
-			return captureValidationError(`Render area must not exceed ${MAX_RENDER_AREA} pixels`, 'rect')
+			return renderValidationError(`Render area must not exceed ${MAX_RENDER_AREA} pixels`, 'rect')
 		}
 		return { revision, rect }
 	}
 
-	private async renderCapture(rect: Rect) {
-		return this.renderExport('png', rect)
-	}
-
-	private async renderExport(format: ExportInput['format'], rect: Rect) {
+	private async renderArtifact(format: ExportInput['format'], rect: Rect) {
 		const shapes = this.getSupportedShapes()
 		if (shapes.length === 0) {
 			return format === 'png' ? transparentPngBlob(rect.w, rect.h) : transparentSvgBlob(rect.w, rect.h)
@@ -761,17 +765,17 @@ function uniquePublicIdForShape(shape: TLShape, usedIds: ReadonlySet<string>) {
 	return id
 }
 
-function captureValidationError(message: string, field: string) {
+function renderValidationError(message: string, field: string) {
 	return { code: 'validation' as const, issues: [{ message, field }] }
 }
 
 async function encodeArtifact(blob: Blob, format: string, field: string) {
 	if (blob.size > MAX_ENCODED_ARTIFACT_BYTES) {
-		return captureValidationError(`${format} must not exceed ${MAX_ENCODED_ARTIFACT_BYTES} bytes`, field)
+		return renderValidationError(`${format} must not exceed ${MAX_ENCODED_ARTIFACT_BYTES} bytes`, field)
 	}
 	const data = await blobToBase64(blob)
 	if (data.length > MAX_ENCODED_ARTIFACT_BYTES) {
-		return captureValidationError(
+		return renderValidationError(
 			`Encoded ${format} response must not exceed ${MAX_ENCODED_ARTIFACT_BYTES} bytes`,
 			field
 		)

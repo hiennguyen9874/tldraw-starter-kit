@@ -14,6 +14,32 @@ let activeRuntime = null
 let pendingRequest = null
 let nextRequestId = 1
 const ignoredResponseIds = new Set()
+const renderRectSchema = {
+	type: 'object',
+	additionalProperties: false,
+	required: ['x', 'y', 'w', 'h'],
+	properties: {
+		x: { type: 'number' },
+		y: { type: 'number' },
+		w: { type: 'number', exclusiveMinimum: 0 },
+		h: { type: 'number', exclusiveMinimum: 0 },
+	},
+}
+const renderInputProperties = {
+	expectedRevision: { type: 'integer', minimum: 0 },
+	rect: renderRectSchema,
+}
+const captureInputSchema = {
+	type: 'object',
+	additionalProperties: false,
+	properties: renderInputProperties,
+}
+const exportInputSchema = {
+	type: 'object',
+	required: ['format'],
+	additionalProperties: false,
+	properties: { format: { type: 'string', enum: ['png', 'svg'] }, ...renderInputProperties },
+}
 
 const server = createServer()
 server.on('upgrade', (request, socket) => {
@@ -91,48 +117,12 @@ async function handleMcpRequest(request) {
 				{
 					name: 'canvas.capture',
 					description: 'Capture a transparent PNG of Canvas Runtime diagram content.',
-					inputSchema: {
-						type: 'object',
-						additionalProperties: false,
-						properties: {
-							expectedRevision: { type: 'integer', minimum: 0 },
-							rect: {
-								type: 'object',
-								additionalProperties: false,
-								required: ['x', 'y', 'w', 'h'],
-								properties: {
-									x: { type: 'number' },
-									y: { type: 'number' },
-									w: { type: 'number', exclusiveMinimum: 0 },
-									h: { type: 'number', exclusiveMinimum: 0 },
-								},
-							},
-						},
-					},
+					inputSchema: captureInputSchema,
 				},
 				{
 					name: 'canvas.export',
 					description: 'Export fixed-1x PNG or standalone SVG Canvas Runtime diagram data.',
-					inputSchema: {
-						type: 'object',
-						required: ['format'],
-						additionalProperties: false,
-						properties: {
-							format: { type: 'string', enum: ['png', 'svg'] },
-							expectedRevision: { type: 'integer', minimum: 0 },
-							rect: {
-								type: 'object',
-								additionalProperties: false,
-								required: ['x', 'y', 'w', 'h'],
-								properties: {
-									x: { type: 'number' },
-									y: { type: 'number' },
-									w: { type: 'number', exclusiveMinimum: 0 },
-									h: { type: 'number', exclusiveMinimum: 0 },
-								},
-							},
-						},
-					},
+					inputSchema: exportInputSchema,
 				},
 			],
 		})

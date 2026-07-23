@@ -2,6 +2,7 @@ import { expect, test as base } from '@playwright/test'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { resolve } from 'node:path'
+import { CANVAS_EXPORT_FIXTURE } from './fixtures/canvasExportFixture'
 
 interface BrowserCanvasTestFacade {
 	getContext(): {
@@ -178,6 +179,9 @@ test('captures transparent Canvas Runtime PNGs through the real MCP bridge', asy
 	expect(await tool('capture-oversized', 'canvas.capture', { rect: { x: 0, y: 0, w: 4_001, h: 4_000 } })).toMatchObject({
 		result: { isError: true, structuredContent: { error: { code: 'validation', issues: [{ field: 'rect' }] } } },
 	})
+	expect(await tool('capture-overwide', 'canvas.capture', { rect: { x: 0, y: 0, w: 8_193, h: 1 } })).toMatchObject({
+		result: { isError: true, structuredContent: { error: { code: 'validation', issues: [{ field: 'rect.w' }] } } },
+	})
 
 	await page.evaluate(() => {
 		const toBlob = HTMLCanvasElement.prototype.toBlob
@@ -194,7 +198,7 @@ test('captures transparent Canvas Runtime PNGs through the real MCP bridge', asy
 
 test('exports fixed-1x transparent PNG and standalone SVG data through the real MCP bridge', async ({
 	page,
-	mcpCanvas: { call, tool },
+	mcpCanvas: { call, context, tool },
 }) => {
 	for (const format of ['png', 'svg'] as const) {
 		const empty = await tool(`export-empty-${format}`, 'canvas.export', { format })
@@ -213,30 +217,40 @@ test('exports fixed-1x transparent PNG and standalone SVG data through the real 
 			expect(await pngPixelAlpha(page, data)).toBe(0)
 		} else {
 			expect(svgViewBox(data)).toBe('0 0 1 1')
-			expect(svgHasExternalAssets(data)).toBe(false)
+			expect(externalAssetUrls(data)).toEqual([])
 		}
 	}
 
-	await call('create-export-node', {
-		expectedRevision: 0,
-		actions: [
-			{ type: 'create', item: { id: 'node', type: 'geo', geo: 'rectangle', x: 100, y: 100, w: 100, h: 80 } },
-		],
-	})
+	await call('create-export-fixture', { expectedRevision: 0, actions: CANVAS_EXPORT_FIXTURE.actions })
+	const fixtureContext = await context('export-fixture-context')
+	expect(fixtureContext).toMatchObject({ result: { structuredContent: { revision: 1 } } })
+	expect(fixtureItems(fixtureContext)).toEqual(
+		expect.arrayContaining([
+			expect.objectContaining({ id: 'fixture-frame', type: 'frame' }),
+			expect.objectContaining({ id: 'fixture-title', type: 'text', text: 'Canvas Export Fixture' }),
+			expect.objectContaining({ id: 'fixture-rectangle', type: 'geo', geo: 'rectangle' }),
+			expect.objectContaining({ id: 'fixture-ellipse', type: 'geo', geo: 'ellipse' }),
+			expect.objectContaining({ id: 'fixture-diamond', type: 'geo', geo: 'diamond' }),
+			expect.objectContaining({ id: 'fixture-arrow-one', type: 'arrow' }),
+			expect.objectContaining({ id: 'fixture-arrow-two', type: 'arrow' }),
+		])
+	)
 
-	const rect = { x: 10, y: 20, w: 30, h: 40 }
+	const rect = { x: 0, y: 0, w: 640, h: 320 }
 	const png = await tool('export-png', 'canvas.export', { format: 'png', expectedRevision: 1, rect })
 	expect(png).toMatchObject({
 		result: { structuredContent: { revision: 1, rect, mimeType: 'image/png' } },
 	})
-	expect(pngDimensions(exportData(png))).toEqual({ width: 30, height: 40 })
+	expect(pngDimensions(exportData(png))).toEqual({ width: 640, height: 320 })
+	expect(await pngHasOpaquePixel(page, exportData(png))).toBe(true)
 
 	const svg = await tool('export-svg', 'canvas.export', { format: 'svg', expectedRevision: 1, rect })
 	expect(svg).toMatchObject({
 		result: { structuredContent: { revision: 1, rect, mimeType: 'image/svg+xml' } },
 	})
-	expect(svgViewBox(exportData(svg))).toBe('10 20 30 40')
-	expect(svgHasExternalAssets(exportData(svg))).toBe(false)
+	expect(svgViewBox(exportData(svg))).toBe('0 0 640 320')
+	expect(Buffer.from(exportData(svg), 'base64').toString('utf8')).toContain('Canvas Export Fixture')
+	expect(externalAssetUrls(exportData(svg))).toEqual([])
 
 	expect(await tool('export-stale', 'canvas.export', { format: 'png', expectedRevision: 0 })).toMatchObject({
 		result: { isError: true, structuredContent: { error: { code: 'stale_revision', expectedRevision: 0, currentRevision: 1 } } },
@@ -246,6 +260,9 @@ test('exports fixed-1x transparent PNG and standalone SVG data through the real 
 	})
 	expect(await tool('export-oversized', 'canvas.export', { format: 'png', rect: { x: 0, y: 0, w: 4_001, h: 4_000 } })).toMatchObject({
 		result: { isError: true, structuredContent: { error: { code: 'validation', issues: [{ field: 'rect' }] } } },
+	})
+	expect(await tool('export-overtall', 'canvas.export', { format: 'png', rect: { x: 0, y: 0, w: 1, h: 8_193 } })).toMatchObject({
+		result: { isError: true, structuredContent: { error: { code: 'validation', issues: [{ field: 'rect.h' }] } } },
 	})
 
 	await page.evaluate(() => {
@@ -261,6 +278,10 @@ test('exports fixed-1x transparent PNG and standalone SVG data through the real 
 	})
 })
 
+function fixtureItems(response: unknown) {
+	return (response as { result: { structuredContent: { document: { items: unknown[] } } } }).result.structuredContent.document.items
+}
+
 function exportData(response: unknown) {
 	const data = (response as { result: { structuredContent: { data?: string } } }).result.structuredContent.data
 	if (!data) throw new Error('Export did not return base64 data')
@@ -271,9 +292,12 @@ function svgViewBox(base64: string) {
 	return Buffer.from(base64, 'base64').toString('utf8').match(/viewBox="([^"]+)"/)?.[1]
 }
 
-function svgHasExternalAssets(base64: string) {
-	const svg = Buffer.from(base64, 'base64').toString('utf8')
-	return /(?:href|src)="(?!data:|#)[^"]+"/.test(svg) || /url\((?!['"]?(?:data:|#))/.test(svg)
+function externalAssetUrls(base64: string) {
+	const svg = Buffer.from(base64, 'base64').toString('utf8').replaceAll('&quot;', '"').replaceAll('&#39;', "'")
+	return [
+		...svg.matchAll(/(?:href|src)="(?!data:|#)([^"]+)"/g),
+		...svg.matchAll(/url\((?!['"]?(?:data:|#))\s*['"]?([^'")\s]+)/g),
+	].map((match) => match[1])
 }
 
 function captureData(response: unknown) {
@@ -296,6 +320,18 @@ function pngPixelAlpha(page: import('@playwright/test').Page, base64: string) {
 		canvas.height = bitmap.height
 		canvas.getContext('2d')?.drawImage(bitmap, 0, 0)
 		return canvas.getContext('2d')?.getImageData(0, 0, 1, 1).data[3]
+	}, base64)
+}
+
+function pngHasOpaquePixel(page: import('@playwright/test').Page, base64: string) {
+	return page.evaluate(async (data) => {
+		const bitmap = await createImageBitmap(await (await fetch(`data:image/png;base64,${data}`)).blob())
+		const canvas = document.createElement('canvas')
+		canvas.width = bitmap.width
+		canvas.height = bitmap.height
+		canvas.getContext('2d')?.drawImage(bitmap, 0, 0)
+		const pixels = canvas.getContext('2d')?.getImageData(0, 0, bitmap.width, bitmap.height).data
+		return pixels ? pixels.some((_, index) => index % 4 === 3 && pixels[index] > 0) : false
 	}, base64)
 }
 
@@ -491,11 +527,27 @@ function sendMcpRequest(
 	request: Record<string, unknown>
 ): Promise<unknown> {
 	return new Promise((resolveResponse, reject) => {
-		const timeout = setTimeout(() => reject(new Error('Timed out waiting for MCP response')), 5_000)
-		cli.stdout.once('data', (chunk) => {
+		let output = ''
+		const cleanup = () => {
 			clearTimeout(timeout)
-			resolveResponse(JSON.parse(chunk.toString()))
-		})
+			cli.stdout.off('data', onData)
+		}
+		const onData = (chunk: Buffer) => {
+			output += chunk.toString()
+			const newline = output.indexOf('\n')
+			if (newline === -1) return
+			cleanup()
+			try {
+				resolveResponse(JSON.parse(output.slice(0, newline)))
+			} catch (error) {
+				reject(error)
+			}
+		}
+		const timeout = setTimeout(() => {
+			cleanup()
+			reject(new Error('Timed out waiting for MCP response'))
+		}, 5_000)
+		cli.stdout.on('data', onData)
 		cli.stdin.write(`${JSON.stringify(request)}\n`)
 	})
 }
