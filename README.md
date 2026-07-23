@@ -15,7 +15,9 @@ Configure your MCP client to start the bridge over stdio with:
 npm run --silent canvas-mcp
 ```
 
-The `--silent` flag keeps npm's own output off stdout. This starts the one Canvas MCP CLI process for the session: it owns both the MCP client's stdio connection and the browser bridge. Find the `Canvas Runtime URL: ...` line in that MCP process's stderr output (typically the MCP client's server logs), then open that exact URL in a browser. The URL carries a fresh loopback-only credential in its fragment; Canvas Runtime removes it after registration.
+The `--silent` flag keeps npm's own output off stdout. This starts the one Canvas MCP CLI process for the session: it owns both the MCP client's stdio connection and the browser bridge. After the MCP client initializes the server, the CLI opens the credentialed Canvas Runtime URL in your default browser. Set `CANVAS_AUTO_OPEN=0` in the MCP server environment to disable this behavior.
+
+Automatic opening requires the MCP CLI to run in your local Linux, macOS, or Windows desktop session. If the OS browser command fails, the MCP server remains usable and reports a non-secret warning; open the `Canvas Runtime URL: ...` line from the MCP client's server logs instead. The URL carries a fresh loopback-only credential in its fragment; Canvas Runtime removes it after registration.
 
 Do not first run `npm run --silent canvas-mcp` in a terminal and then configure the MCP client to run it again. Every CLI launch creates a different bridge port and token, so a URL from one process cannot connect to another process. A manual terminal launch is useful only for diagnosing startup and its stdio output; stop it before letting the MCP client launch the bridge for normal use.
 

@@ -3,6 +3,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { createServer } from 'node:http'
 import { createInterface } from 'node:readline'
 import { canvasToolInputSchemas } from './canvas-mcp-schemas.mjs'
+import { createCanvasRuntimeBrowserOpener } from './open-canvas-runtime.mjs'
 
 const bridgeVersion = 1
 const requestTimeoutMs =
@@ -15,6 +16,16 @@ let activeRuntime = null
 let pendingRequest = null
 let nextRequestId = 1
 const ignoredResponseIds = new Set()
+const logLevels = ['debug', 'info', 'notice', 'warning', 'error', 'critical', 'alert', 'emergency']
+let minimumLogLevel = 'warning'
+const browserOpener = createCanvasRuntimeBrowserOpener({
+	enabled: process.env.CANVAS_AUTO_OPEN !== '0',
+	onFailure(reason) {
+		const message = `Could not automatically open Canvas Runtime (${reason}). Open its URL from the MCP server logs.`
+		process.stderr.write(`${message}\n`)
+		writeMcpLog('warning', message)
+	},
+})
 const server = createServer()
 server.on('upgrade', (request, socket) => {
 	if (request.headers.upgrade?.toLowerCase() !== 'websocket') return socket.destroy()
@@ -46,6 +57,7 @@ server.listen({ host: '127.0.0.1', port: 0 }, () => {
 	}).toString()
 	process.stderr.write(`Canvas Runtime URL: ${canvasUrl}\n`)
 	process.stderr.write(`Canvas MCP bridge listening on 127.0.0.1:${address.port}\n`)
+	browserOpener.runtimeUrlReady(String(canvasUrl))
 })
 
 createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', (line) => {
@@ -64,11 +76,20 @@ async function handleMcpRequest(request) {
 	}
 	if (!('id' in request)) return
 	if (request.method === 'initialize') {
-		return writeMcpResult(request.id, {
+		writeMcpResult(request.id, {
 			protocolVersion: request.params?.protocolVersion ?? '2025-03-26',
-			capabilities: { tools: {} },
+			capabilities: { logging: {}, tools: {} },
 			serverInfo: { name: 'canvas-runtime', version: '1.0.0' },
 		})
+		browserOpener.mcpInitialized()
+		return
+	}
+	if (request.method === 'logging/setLevel') {
+		if (!logLevels.includes(request.params?.level)) {
+			return writeMcpError(request.id, -32602, 'Invalid logging level')
+		}
+		minimumLogLevel = request.params.level
+		return writeMcpResult(request.id, {})
 	}
 	if (request.method === 'tools/list') {
 		return writeMcpResult(request.id, {
@@ -313,6 +334,13 @@ function toolError(code, message = code, error = { code }) {
 
 function writeMcpResult(id, result) {
 	process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`)
+}
+
+function writeMcpLog(level, data) {
+	if (logLevels.indexOf(level) < logLevels.indexOf(minimumLogLevel)) return
+	process.stdout.write(
+		`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/message', params: { level, logger: 'canvas-runtime', data } })}\n`
+	)
 }
 
 function writeMcpError(id, code, message) {

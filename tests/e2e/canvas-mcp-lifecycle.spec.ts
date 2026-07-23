@@ -9,6 +9,7 @@ class McpBridgeHarness {
 		env: {
 			...process.env,
 			CANVAS_URL: 'http://127.0.0.1:4173/',
+			CANVAS_AUTO_OPEN: '0',
 			NODE_ENV: 'test',
 			CANVAS_BRIDGE_TEST_TIMEOUT_MS: '100',
 		},
@@ -38,6 +39,15 @@ class McpBridgeHarness {
 
 	get canvasUrl() {
 		return this.stderr.match(/Canvas Runtime URL: (.+)/)?.[1]
+	}
+
+	initialize(id: string) {
+		return this.send(id, {
+			jsonrpc: '2.0',
+			id,
+			method: 'initialize',
+			params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'test', version: '1' } },
+		})
 	}
 
 	request(id: string, name = 'canvas.get_context') {
@@ -149,6 +159,10 @@ test('enforces the Canvas Runtime bridge lifecycle and supports large context re
 		const canvasUrl = bridge.canvasUrl
 		if (!canvasUrl) throw new Error('CLI did not print a Canvas Runtime URL')
 
+		expect((await bridge.initialize('initialize')).result).toMatchObject({
+			protocolVersion: '2025-03-26',
+			capabilities: { logging: {}, tools: {} },
+		})
 		expect(
 			((await bridge.listTools('tools-list')).result as { tools: Array<{ name: string }> }).tools.map(
 				(tool) => tool.name
