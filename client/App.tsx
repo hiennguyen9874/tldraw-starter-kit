@@ -103,7 +103,9 @@ function App() {
 				}}
 			/>
 			<div className={`canvas-bridge-status canvas-bridge-status-${bridgeStatus}`}>
-				Bridge {bridgeStatus}
+				{bridgeStatus === 'disconnected'
+					? 'Bridge disconnected — reopen the URL printed by npm run canvas-mcp'
+					: `Bridge ${bridgeStatus}`}
 			</div>
 		</div>
 	)

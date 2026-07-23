@@ -20,6 +20,7 @@ async function getRuntimeContext(page: import('@playwright/test').Page) {
 test('gets canonical Canvas Runtime context through the real stdio MCP bridge', async ({ page }) => {
 	const cli = spawn(process.execPath, [resolve('cli/canvas-mcp.mjs')], {
 		stdio: ['pipe', 'pipe', 'pipe'],
+		env: { ...process.env, CANVAS_URL: 'http://127.0.0.1:4173/' },
 	})
 	let stderr = ''
 	cli.stderr.setEncoding('utf8')
@@ -50,8 +51,23 @@ test('gets canonical Canvas Runtime context through the real stdio MCP bridge', 
 				structuredContent: { revision: 0, document: { items: [] }, contentBounds: null },
 			},
 		})
+
+		const replacementPage = await page.context().newPage()
+		await replacementPage.goto(canvasUrl)
+		await expect(replacementPage.getByText('Bridge connected')).toBeVisible()
+		await expect(page.getByText(/Bridge disconnected — reopen/)).toBeVisible()
+		await replacementPage.waitForTimeout(2_000)
+		await expect(replacementPage.getByText('Bridge connected')).toBeVisible()
+
+		const exit = once(cli, 'exit')
+		cli.kill()
+		await exit
+		await expect(replacementPage.getByText('Bridge reconnecting')).toBeVisible()
+		await expect(replacementPage.getByText(/Bridge disconnected — reopen/)).toBeVisible({
+			timeout: 5_000,
+		})
 	} finally {
-		if (cli.exitCode === null) {
+		if (cli.exitCode === null && cli.signalCode === null) {
 			const exit = once(cli, 'exit')
 			cli.kill()
 			await exit

@@ -11,6 +11,7 @@ export class CanvasBridge {
 	private socket: WebSocket | undefined
 	private reconnectAttempt = 0
 	private disposed = false
+	private replaced = false
 
 	private constructor(
 		private readonly endpoint: string,
@@ -33,6 +34,7 @@ export class CanvasBridge {
 		}
 
 		const bridge = new CanvasBridge(`ws://127.0.0.1:${port}`, token, handleTool, setStatus)
+		setStatus('reconnecting')
 		bridge.connect()
 		return bridge
 	}
@@ -70,6 +72,12 @@ export class CanvasBridge {
 			this.setStatus('connected')
 			return
 		}
+		if (message.type === 'replaced') {
+			this.replaced = true
+			this.setStatus('disconnected')
+			this.socket?.close()
+			return
+		}
 		if (message.type !== 'request') return this.socket?.close()
 
 		const parsedRequest = CanvasToolRequestSchema.safeParse(message.request)
@@ -79,7 +87,7 @@ export class CanvasBridge {
 	}
 
 	private reconnect() {
-		if (this.disposed) return
+		if (this.disposed || this.replaced) return
 		const delay = RECONNECT_DELAYS_MS[this.reconnectAttempt++]
 		if (delay === undefined) {
 			this.setStatus('disconnected')

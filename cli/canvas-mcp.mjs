@@ -4,11 +4,16 @@ import { createServer } from 'node:http'
 import { createInterface } from 'node:readline'
 
 const bridgeVersion = 1
+const requestTimeoutMs =
+	process.env.NODE_ENV === 'test' && process.env.CANVAS_BRIDGE_TEST_TIMEOUT_MS
+		? Number(process.env.CANVAS_BRIDGE_TEST_TIMEOUT_MS)
+		: 30_000
 const token = randomBytes(32).toString('base64url')
-const canvasUrlBase = process.env.CANVAS_URL ?? 'http://127.0.0.1:4173/'
+const canvasUrlBase = process.env.CANVAS_URL ?? 'http://127.0.0.1:5173/'
 let activeRuntime = null
+let pendingRequest = null
 let nextRequestId = 1
-const pendingRequests = new Map()
+const ignoredResponseIds = new Set()
 
 const server = createServer()
 server.on('upgrade', (request, socket) => {
@@ -54,9 +59,10 @@ createInterface({ input: process.stdin, crlfDelay: Infinity }).on('line', (line)
 })
 
 async function handleMcpRequest(request) {
-	if (!request || request.jsonrpc !== '2.0' || !('id' in request) || typeof request.method !== 'string') {
+	if (!request || request.jsonrpc !== '2.0' || typeof request.method !== 'string') {
 		return writeMcpError(request?.id ?? null, -32600, 'Invalid Request')
 	}
+	if (!('id' in request)) return
 	if (request.method === 'initialize') {
 		return writeMcpResult(request.id, {
 			protocolVersion: request.params?.protocolVersion ?? '2025-03-26',
@@ -79,56 +85,117 @@ async function handleMcpRequest(request) {
 	if (request.params?.name !== 'canvas.get_context') {
 		return writeMcpResult(request.id, toolError('validation', 'Unknown Canvas Runtime tool'))
 	}
+	const input = request.params.arguments ?? {}
+	if (!isRecord(input) || Object.keys(input).length !== 0) {
+		return writeMcpResult(request.id, toolError('validation', 'canvas.get_context does not accept arguments'))
+	}
 	if (!activeRuntime?.registered) return writeMcpResult(request.id, toolError('unavailable'))
+	if (pendingRequest) return writeMcpResult(request.id, toolError('busy'))
 
 	const bridgeRequestId = `bridge-${nextRequestId++}`
-	pendingRequests.set(bridgeRequestId, request.id)
-	activeRuntime.send({
+	const runtime = activeRuntime
+	const timeout = setTimeout(() => {
+		if (pendingRequest?.bridgeRequestId !== bridgeRequestId) return
+		ignoredResponseIds.add(bridgeRequestId)
+		if (ignoredResponseIds.size > 100) ignoredResponseIds.delete(ignoredResponseIds.values().next().value)
+		pendingRequest = null
+		writeMcpResult(request.id, toolError('timeout'))
+	}, requestTimeoutMs)
+	pendingRequest = { bridgeRequestId, mcpRequestId: request.id, runtime, timeout }
+	runtime.send({
 		version: bridgeVersion,
 		type: 'request',
 		request: {
 			version: bridgeVersion,
 			id: bridgeRequestId,
 			tool: 'canvas.get_context',
-			input: request.params.arguments ?? {},
+			input,
 		},
 	})
 }
 
 function createRuntimeConnection(socket) {
 	let buffer = Buffer.alloc(0)
+	let fragments = []
+	let closed = false
 	const runtime = {
 		registered: false,
 		send(message) {
-			const content = Buffer.from(JSON.stringify(message))
-			const header = content.length < 126 ? Buffer.from([0x81, content.length]) : Buffer.from([0x81, 126, content.length >> 8, content.length & 0xff])
-			socket.write(Buffer.concat([header, content]))
+			if (!closed) socket.write(encodeWebSocketFrame(0x1, Buffer.from(JSON.stringify(message))))
 		},
 		close() {
-			socket.end(Buffer.from([0x88, 0x00]))
+			if (closed) return
+			closed = true
+			socket.end(encodeWebSocketFrame(0x8, Buffer.alloc(0)))
 		},
 		read(chunk) {
+			if (closed) return
 			buffer = Buffer.concat([buffer, chunk])
 			while (buffer.length >= 2) {
-				const encodedLength = buffer[1] & 0x7f
-				if ((buffer[1] & 0x80) === 0 || encodedLength === 127) return runtime.close()
-				const lengthBytes = encodedLength === 126 ? 2 : 0
-				if (buffer.length < 6 + lengthBytes) return
-				const payloadLength = lengthBytes ? buffer.readUInt16BE(2) : encodedLength
+				const firstByte = buffer[0]
+				const secondByte = buffer[1]
+				const isFinal = (firstByte & 0x80) !== 0
+				const opcode = firstByte & 0x0f
+				const encodedLength = secondByte & 0x7f
+				if ((firstByte & 0x70) !== 0 || (secondByte & 0x80) === 0) return runtime.close()
+				const lengthBytes = encodedLength === 126 ? 2 : encodedLength === 127 ? 8 : 0
+				if (buffer.length < 2 + lengthBytes + 4) return
+				let payloadLength
+				if (encodedLength === 126) payloadLength = buffer.readUInt16BE(2)
+				else if (encodedLength === 127) {
+					const length = buffer.readBigUInt64BE(2)
+					if (length > BigInt(Number.MAX_SAFE_INTEGER)) return runtime.close()
+					payloadLength = Number(length)
+				} else payloadLength = encodedLength
+				if (opcode >= 0x8 && (!isFinal || payloadLength > 125)) return runtime.close()
 				const maskOffset = 2 + lengthBytes
-				if (buffer.length < maskOffset + 4 + payloadLength) return
-				const opcode = buffer[0] & 0x0f
-				const mask = buffer.subarray(maskOffset, maskOffset + 4)
-				const payload = buffer.subarray(maskOffset + 4, maskOffset + 4 + payloadLength)
-				buffer = buffer.subarray(maskOffset + 4 + payloadLength)
-				if (opcode === 0x8) return runtime.close()
-				if (opcode !== 0x1) continue
+				const payloadOffset = maskOffset + 4
+				if (buffer.length < payloadOffset + payloadLength) return
+				const mask = buffer.subarray(maskOffset, payloadOffset)
+				const payload = Buffer.from(buffer.subarray(payloadOffset, payloadOffset + payloadLength))
+				buffer = buffer.subarray(payloadOffset + payloadLength)
 				for (let index = 0; index < payload.length; index++) payload[index] ^= mask[index % 4]
-				handleRuntimeMessage(runtime, payload.toString())
+
+				if (opcode === 0x8) return runtime.close()
+				if (opcode === 0x9) {
+					socket.write(encodeWebSocketFrame(0xa, payload))
+					continue
+				}
+				if (opcode === 0x1) {
+					if (fragments.length) return runtime.close()
+					if (isFinal) handleRuntimeMessage(runtime, payload.toString())
+					else fragments = [payload]
+					continue
+				}
+				if (opcode === 0x0 && fragments.length) {
+					fragments.push(payload)
+					if (isFinal) {
+						handleRuntimeMessage(runtime, Buffer.concat(fragments).toString())
+						fragments = []
+					}
+					continue
+				}
+				return runtime.close()
 			}
 		},
 	}
 	return runtime
+}
+
+function encodeWebSocketFrame(opcode, content) {
+	if (content.length < 126) return Buffer.concat([Buffer.from([0x80 | opcode, content.length]), content])
+	if (content.length <= 0xffff) {
+		const header = Buffer.alloc(4)
+		header[0] = 0x80 | opcode
+		header[1] = 126
+		header.writeUInt16BE(content.length, 2)
+		return Buffer.concat([header, content])
+	}
+	const header = Buffer.alloc(10)
+	header[0] = 0x80 | opcode
+	header[1] = 127
+	header.writeBigUInt64BE(BigInt(content.length), 2)
+	return Buffer.concat([header, content])
 }
 
 function handleRuntimeMessage(runtime, payload) {
@@ -142,15 +209,29 @@ function handleRuntimeMessage(runtime, payload) {
 		if (message?.version !== bridgeVersion || message?.type !== 'register' || message?.token !== token) {
 			return runtime.close()
 		}
-		if (activeRuntime && activeRuntime !== runtime) activeRuntime.close()
+		if (activeRuntime && activeRuntime !== runtime) {
+			settlePending(activeRuntime, 'replaced')
+			activeRuntime.send({ version: bridgeVersion, type: 'replaced' })
+			activeRuntime.close()
+		}
 		runtime.registered = true
 		activeRuntime = runtime
 		return runtime.send({ version: bridgeVersion, type: 'registered' })
 	}
-	if (message?.version !== bridgeVersion || message?.type !== 'response') return runtime.close()
-	const mcpRequestId = pendingRequests.get(message.response?.id)
-	if (mcpRequestId === undefined) return
-	pendingRequests.delete(message.response.id)
+	if (message?.version !== bridgeVersion || message?.type !== 'response' || !isRuntimeResponse(message.response)) {
+		return runtime.close()
+	}
+	if (ignoredResponseIds.delete(message.response.id)) return
+	if (
+		!pendingRequest ||
+		pendingRequest.runtime !== runtime ||
+		pendingRequest.bridgeRequestId !== message.response.id
+	) {
+		return runtime.close()
+	}
+	const { mcpRequestId, timeout } = pendingRequest
+	clearTimeout(timeout)
+	pendingRequest = null
 	if (message.response.ok) {
 		writeMcpResult(mcpRequestId, {
 			content: [{ type: 'text', text: JSON.stringify(message.response.result) }],
@@ -161,13 +242,35 @@ function handleRuntimeMessage(runtime, payload) {
 	}
 }
 
+function isRuntimeResponse(response) {
+	if (
+		!isRecord(response) ||
+		response.version !== bridgeVersion ||
+		typeof response.id !== 'string' ||
+		response.tool !== 'canvas.get_context' ||
+		typeof response.ok !== 'boolean'
+	) {
+		return false
+	}
+	return response.ok ? isRecord(response.result) : isRecord(response.error) && typeof response.error.code === 'string'
+}
+
+function isRecord(value) {
+	return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function settlePending(runtime, code) {
+	if (!pendingRequest || pendingRequest.runtime !== runtime) return
+	const { mcpRequestId, timeout } = pendingRequest
+	clearTimeout(timeout)
+	pendingRequest = null
+	writeMcpResult(mcpRequestId, toolError(code))
+}
+
 function disconnectRuntime(runtime) {
 	if (activeRuntime !== runtime) return
 	activeRuntime = null
-	for (const [bridgeRequestId, mcpRequestId] of pendingRequests) {
-		pendingRequests.delete(bridgeRequestId)
-		writeMcpResult(mcpRequestId, toolError('unavailable'))
-	}
+	settlePending(runtime, 'unavailable')
 }
 
 function toolError(code, message = code) {
