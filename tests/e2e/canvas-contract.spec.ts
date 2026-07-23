@@ -639,6 +639,201 @@ test('creates supported geometric Canvas Items directly in the browser', async (
 		.toEqual({ revision: 3, geos: ['diamond', 'ellipse', 'rectangle'] })
 })
 
+test('moves and resizes a directly created geometric Canvas Item', async ({ page }) => {
+	await page.goto('/')
+	await page.getByTestId('tools.rectangle').click()
+	await page.mouse.move(100, 100)
+	await page.mouse.down()
+	await page.mouse.move(200, 180)
+	await page.mouse.up()
+
+	await page.mouse.move(150, 140)
+	await page.mouse.down()
+	await page.mouse.move(250, 200)
+	await page.mouse.up()
+
+	await page.mouse.move(300, 240)
+	await page.mouse.down()
+	await page.mouse.move(350, 280)
+	await page.mouse.up()
+
+	await expect.poll(() => getRuntimeContext(page)).toMatchObject({
+		revision: 3,
+		document: { items: [{ type: 'geo', geo: 'rectangle', x: 200, y: 160, w: 150, h: 120 }] },
+	})
+})
+
+test('advances revision once for direct edits and each undo or redo step', async ({ page }) => {
+	await page.goto('/')
+	await page.getByTestId('tools.rectangle').click()
+	await page.mouse.move(100, 100)
+	await page.mouse.down()
+	await page.mouse.move(200, 180)
+	await page.mouse.up()
+
+	await expect.poll(() => getRuntimeContext(page)).toMatchObject({
+		revision: 1,
+		document: { items: [{ type: 'geo', geo: 'rectangle', x: 100, y: 100, w: 100, h: 80 }] },
+	})
+
+	await page.keyboard.press('Control+z')
+	await expect.poll(() => getRuntimeContext(page)).toEqual({
+		revision: 2,
+		document: { items: [] },
+		contentBounds: null,
+	})
+
+	await page.keyboard.press('Control+Shift+z')
+	await expect.poll(() => getRuntimeContext(page)).toMatchObject({
+		revision: 3,
+		document: { items: [{ type: 'geo', geo: 'rectangle', x: 100, y: 100, w: 100, h: 80 }] },
+	})
+})
+
+test('undoes and redoes one atomic MCP batch in one revision step each', async ({
+	page,
+	mcpCanvas: { call, context },
+}) => {
+	await call('create-batch', {
+		expectedRevision: 0,
+		actions: [
+			{ type: 'create', item: { id: 'node-a', type: 'geo', geo: 'rectangle', x: 100, y: 100, w: 100, h: 80 } },
+			{ type: 'create', item: { id: 'node-b', type: 'geo', geo: 'ellipse', x: 300, y: 100, w: 100, h: 80 } },
+		],
+	})
+	await expect.poll(() => context('created-batch')).toMatchObject({
+		result: { structuredContent: { revision: 1, document: { items: [{ id: 'node-a' }, { id: 'node-b' }] } } },
+	})
+
+	await page.keyboard.press('Control+z')
+	await expect.poll(() => context('undo-batch')).toMatchObject({
+		result: { structuredContent: { revision: 2, document: { items: [] } } },
+	})
+
+	await page.keyboard.press('Control+Shift+z')
+	await expect.poll(() => context('redo-batch')).toMatchObject({
+		result: { structuredContent: { revision: 3, document: { items: [{ id: 'node-a' }, { id: 'node-b' }] } } },
+	})
+})
+
+test('persists Canvas Items across reload after an MCP edit', async ({ page, mcpCanvas: { call } }) => {
+	await call('create-for-reload', {
+		expectedRevision: 0,
+		actions: [
+			{ type: 'create', item: { id: 'node', type: 'geo', geo: 'rectangle', x: 100, y: 100, w: 100, h: 80 } },
+		],
+	})
+
+	await page.reload()
+	await expect.poll(() => getRuntimeContext(page)).toMatchObject({
+		revision: 1,
+		document: { items: [{ id: 'node', type: 'geo', geo: 'rectangle', x: 100, y: 100, w: 100, h: 80 }] },
+	})
+})
+
+test('selects and deletes MCP-created frames and Bound Arrows through the browser', async ({
+	page,
+	mcpCanvas: { call, context },
+}) => {
+	await call('create-frame-and-arrow', {
+		expectedRevision: 0,
+		actions: [
+			{ type: 'create', item: { id: 'frame', type: 'frame', x: 100, y: 300, w: 400, h: 200, memberIds: ['node-a', 'node-b'] } },
+			{ type: 'create', item: { id: 'node-a', type: 'geo', geo: 'rectangle', x: 150, y: 350, w: 100, h: 80 } },
+			{ type: 'create', item: { id: 'node-b', type: 'geo', geo: 'ellipse', x: 350, y: 350, w: 100, h: 80 } },
+			{ type: 'create', item: { id: 'edge', type: 'arrow', fromId: 'node-a', toId: 'node-b' } },
+		],
+	})
+
+	await page.mouse.click(300, 390)
+	await page.keyboard.press('Delete')
+	await expect.poll(() => context('deleted-arrow')).toMatchObject({
+		result: {
+			structuredContent: {
+				revision: 2,
+				document: { items: [{ id: 'frame', type: 'frame' }, { id: 'node-a', type: 'geo' }, { id: 'node-b', type: 'geo' }] },
+			},
+		},
+	})
+
+	await page.getByTestId('canvas').getByText('Frame', { exact: true }).click()
+	await page.keyboard.press('Delete')
+	await expect.poll(() => context('deleted-frame')).toMatchObject({
+		result: {
+			structuredContent: {
+				revision: 3,
+				document: { items: [{ id: 'node-a', type: 'geo' }, { id: 'node-b', type: 'geo' }] },
+			},
+		},
+	})
+})
+
+test('rejects unsupported browser operations and frame movement without changing the Canvas Item document', async ({
+	page,
+	mcpCanvas: { call, context },
+}) => {
+	await expect(page.getByRole('button', { name: 'Draw' })).toHaveCount(0)
+	await expect(page.getByRole('button', { name: 'Arrow' })).toHaveCount(0)
+	await expect(page.getByRole('button', { name: 'Line' })).toHaveCount(0)
+	await expect(page.getByRole('button', { name: 'Frame' })).toHaveCount(0)
+	await expect(page.locator('.tlui-style-panel')).toHaveCount(0)
+
+	for (const shortcut of ['d', 'a', 'f']) {
+		await page.keyboard.press(shortcut)
+		await page.mouse.move(100, 100)
+		await page.mouse.down()
+		await page.mouse.move(200, 180)
+		await page.mouse.up()
+	}
+	await expect(getRuntimeContext(page)).resolves.toEqual({
+		revision: 0,
+		document: { items: [] },
+		contentBounds: null,
+	})
+
+	await page.getByTestId('tools.rectangle').click()
+	await page.mouse.move(100, 100)
+	await page.mouse.down()
+	await page.mouse.move(200, 180)
+	await page.mouse.up()
+	await page.keyboard.press('Control+a')
+	await page.keyboard.press('Control+g')
+	await page.keyboard.press('Shift+.')
+	await expect.poll(() => getRuntimeContext(page)).toMatchObject({
+		revision: 1,
+		document: { items: [{ type: 'geo', geo: 'rectangle', x: 100, y: 100, w: 100, h: 80 }] },
+	})
+
+	await call('create-frame', {
+		expectedRevision: 1,
+		actions: [{ type: 'create', item: { id: 'frame', type: 'frame', x: 100, y: 300, w: 400, h: 200, memberIds: [] } }],
+	})
+	const frameLabel = page.getByTestId('canvas').getByText('Frame', { exact: true })
+	const frameLabelBounds = await frameLabel.boundingBox()
+	if (!frameLabelBounds) throw new Error('MCP-created frame label is not visible')
+	await page.mouse.move(frameLabelBounds.x + 10, frameLabelBounds.y + 10)
+	await page.mouse.down()
+	await page.mouse.move(frameLabelBounds.x + 110, frameLabelBounds.y + 110)
+	await page.mouse.up()
+	await expect
+		.poll(async () => {
+			const response = await context('frame-still-positioned') as {
+				result: { structuredContent: { revision: number; document: { items: Array<Record<string, unknown>> } } }
+			}
+			const { revision, document } = response.result.structuredContent
+			return {
+				revision,
+				frame: document.items.find((item) => item.id === 'frame'),
+				geometricItems: document.items.filter((item) => item.type === 'geo'),
+			}
+		})
+		.toMatchObject({
+			revision: 2,
+			frame: { id: 'frame', type: 'frame', x: 100, y: 300, w: 400, h: 200, memberIds: [] },
+			geometricItems: [{ type: 'geo', geo: 'rectangle', x: 100, y: 100, w: 100, h: 80 }],
+		})
+})
+
 test('assigns a unique public ID when a Canvas Item is duplicated', async ({ page }) => {
 	await page.goto('/')
 	await page.getByTestId('tools.rectangle').click()
