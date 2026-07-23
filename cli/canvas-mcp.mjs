@@ -2,6 +2,7 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { createServer } from 'node:http'
 import { createInterface } from 'node:readline'
+import { canvasToolInputSchemas } from './canvas-mcp-schemas.mjs'
 
 const bridgeVersion = 1
 const requestTimeoutMs =
@@ -14,33 +15,6 @@ let activeRuntime = null
 let pendingRequest = null
 let nextRequestId = 1
 const ignoredResponseIds = new Set()
-const renderRectSchema = {
-	type: 'object',
-	additionalProperties: false,
-	required: ['x', 'y', 'w', 'h'],
-	properties: {
-		x: { type: 'number' },
-		y: { type: 'number' },
-		w: { type: 'number', exclusiveMinimum: 0 },
-		h: { type: 'number', exclusiveMinimum: 0 },
-	},
-}
-const renderInputProperties = {
-	expectedRevision: { type: 'integer', minimum: 0 },
-	rect: renderRectSchema,
-}
-const captureInputSchema = {
-	type: 'object',
-	additionalProperties: false,
-	properties: renderInputProperties,
-}
-const exportInputSchema = {
-	type: 'object',
-	required: ['format'],
-	additionalProperties: false,
-	properties: { format: { type: 'string', enum: ['png', 'svg'] }, ...renderInputProperties },
-}
-
 const server = createServer()
 server.on('upgrade', (request, socket) => {
 	if (request.headers.upgrade?.toLowerCase() !== 'websocket') return socket.destroy()
@@ -102,27 +76,22 @@ async function handleMcpRequest(request) {
 				{
 					name: 'canvas.get_context',
 					description: 'Get the canonical context of the active Canvas Runtime.',
-					inputSchema: { type: 'object', additionalProperties: false, properties: {} },
+					inputSchema: canvasToolInputSchemas['canvas.get_context'],
 				},
 				{
 					name: 'canvas.apply_actions',
 					description: 'Atomically apply revision-safe Canvas Item actions.',
-					inputSchema: {
-						type: 'object',
-						required: ['expectedRevision', 'actions'],
-						additionalProperties: false,
-						properties: { expectedRevision: { type: 'integer', minimum: 0 }, actions: { type: 'array', minItems: 1 } },
-					},
+					inputSchema: canvasToolInputSchemas['canvas.apply_actions'],
 				},
 				{
 					name: 'canvas.capture',
 					description: 'Capture a transparent PNG of Canvas Runtime diagram content.',
-					inputSchema: captureInputSchema,
+					inputSchema: canvasToolInputSchemas['canvas.capture'],
 				},
 				{
 					name: 'canvas.export',
 					description: 'Export fixed-1x PNG or standalone SVG Canvas Runtime diagram data.',
-					inputSchema: exportInputSchema,
+					inputSchema: canvasToolInputSchemas['canvas.export'],
 				},
 			],
 		})
@@ -130,18 +99,6 @@ async function handleMcpRequest(request) {
 	if (request.method !== 'tools/call') return writeMcpError(request.id, -32601, 'Method not found')
 	const input = request.params?.arguments ?? {}
 	const tool = request.params?.name
-	if (tool === 'canvas.get_context' && (!isRecord(input) || Object.keys(input).length !== 0)) {
-		return writeMcpResult(request.id, toolError('validation', 'canvas.get_context does not accept arguments'))
-	}
-	if (tool === 'canvas.apply_actions' && !isApplyActionsInput(input)) {
-		return writeMcpResult(request.id, toolError('validation', 'canvas.apply_actions requires a non-negative revision and actions'))
-	}
-	if (tool === 'canvas.capture' && !isCaptureInput(input)) {
-		return writeMcpResult(request.id, toolError('validation', 'canvas.capture requires an object input'))
-	}
-	if (tool === 'canvas.export' && !isExportInput(input)) {
-		return writeMcpResult(request.id, toolError('validation', 'canvas.export requires a PNG or SVG format'))
-	}
 	if (tool !== 'canvas.get_context' && tool !== 'canvas.apply_actions' && tool !== 'canvas.capture' && tool !== 'canvas.export') {
 		return writeMcpResult(request.id, toolError('validation', 'Unknown Canvas Runtime tool'))
 	}
@@ -334,24 +291,6 @@ function isRuntimeResponse(response) {
 
 function isRecord(value) {
 	return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-function isApplyActionsInput(input) {
-	return (
-		isRecord(input) &&
-		Number.isInteger(input.expectedRevision) &&
-		input.expectedRevision >= 0 &&
-		Array.isArray(input.actions) &&
-		input.actions.length > 0
-	)
-}
-
-function isCaptureInput(input) {
-	return isRecord(input)
-}
-
-function isExportInput(input) {
-	return isRecord(input) && (input.format === 'png' || input.format === 'svg')
 }
 
 function settlePending(runtime, code) {

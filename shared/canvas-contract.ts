@@ -177,6 +177,7 @@ const TextCanvasItemPatchSchema = z
 		text: z.string().optional(),
 	})
 	.refine(hasCanvasItemPatchChange, { message: CanvasItemPatchChangeMessage })
+	.meta({ anyOf: [{ required: ['x'] }, { required: ['y'] }, { required: ['text'] }] })
 
 const GeometricCanvasItemPatchSchema = z
 	.strictObject({
@@ -188,6 +189,15 @@ const GeometricCanvasItemPatchSchema = z
 		text: z.string().optional(),
 	})
 	.refine(hasCanvasItemPatchChange, { message: CanvasItemPatchChangeMessage })
+	.meta({
+		anyOf: [
+			{ required: ['x'] },
+			{ required: ['y'] },
+			{ required: ['w'] },
+			{ required: ['h'] },
+			{ required: ['text'] },
+		],
+	})
 
 const BoundArrowCanvasItemPatchSchema = z
 	.strictObject({
@@ -196,6 +206,7 @@ const BoundArrowCanvasItemPatchSchema = z
 		toId: CanvasItemIdSchema.optional(),
 	})
 	.refine(hasCanvasItemPatchChange, { message: CanvasItemPatchChangeMessage })
+	.meta({ anyOf: [{ required: ['fromId'] }, { required: ['toId'] }] })
 	.refine(({ fromId, toId }) => fromId === undefined || toId === undefined || fromId !== toId, {
 		path: ['toId'],
 		message: 'A Bound Arrow cannot bind a Canvas Item to itself',
@@ -207,6 +218,7 @@ const FrameCanvasItemPatchSchema = z
 		memberIds: z.array(CanvasItemIdSchema).optional(),
 	})
 	.refine(hasCanvasItemPatchChange, { message: CanvasItemPatchChangeMessage })
+	.meta({ anyOf: [{ required: ['memberIds'] }] })
 
 export const CanvasItemPatchSchema = z.discriminatedUnion('type', [
 	TextCanvasItemPatchSchema,
@@ -258,6 +270,41 @@ export const ExportInputSchema = CaptureInputSchema.extend({
 	format: z.enum(['png', 'svg']),
 })
 export type ExportInput = z.infer<typeof ExportInputSchema>
+
+export const CanvasToolInputSchemas = {
+	'canvas.get_context': GetContextInputSchema,
+	'canvas.apply_actions': ApplyActionsInputSchema,
+	'canvas.capture': CaptureInputSchema,
+	'canvas.export': ExportInputSchema,
+} as const
+export type CanvasToolName = keyof typeof CanvasToolInputSchemas
+
+export function toCanvasToolInputJsonSchema(schema: { toJSONSchema(): object }) {
+	const jsonSchema = structuredClone(schema.toJSONSchema())
+	removeDefaultedRequiredProperties(jsonSchema)
+	return jsonSchema
+}
+
+function removeDefaultedRequiredProperties(value: unknown): void {
+	if (Array.isArray(value)) {
+		for (const child of value) removeDefaultedRequiredProperties(child)
+		return
+	}
+	if (!isJsonSchema(value)) return
+	for (const child of Object.values(value)) removeDefaultedRequiredProperties(child)
+
+	const { properties, required } = value
+	if (!isJsonSchema(properties) || !Array.isArray(required)) return
+	const filteredRequired = required.filter(
+		(key) => typeof key !== 'string' || !isJsonSchema(properties[key]) || !Object.hasOwn(properties[key], 'default')
+	)
+	value.required = filteredRequired
+	if (filteredRequired.length === 0) delete value.required
+}
+
+function isJsonSchema(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
 
 const CanvasToolEnvelopeShape = {
 	version: z.literal(CANVAS_CONTRACT_VERSION),

@@ -4,6 +4,8 @@
 	"private": true,
 	"type": "module",
 	"scripts": {
+		"generate:canvas-mcp-schemas": "node scripts/generate-canvas-mcp-schemas.mjs",
+		"prebuild": "npm run generate:canvas-mcp-schemas",
 		"build": "vite build",
 		"dev": "vite --host",
 		"preview": "vite preview",
