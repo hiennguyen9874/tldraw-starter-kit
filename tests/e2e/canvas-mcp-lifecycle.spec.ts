@@ -41,20 +41,26 @@ class McpBridgeHarness {
 	}
 
 	request(id: string, name = 'canvas.get_context') {
+		return this.send(id, {
+			jsonrpc: '2.0',
+			id,
+			method: 'tools/call',
+			params: { name, arguments: {} },
+		})
+	}
+
+	listTools(id: string) {
+		return this.send(id, { jsonrpc: '2.0', id, method: 'tools/list' })
+	}
+
+	private send(id: string, request: Record<string, unknown>) {
 		return new Promise<Record<string, unknown>>((resolveResponse, reject) => {
 			const timeout = setTimeout(() => reject(new Error(`Timed out waiting for MCP response ${id}`)), 5_000)
 			this.responses.set(id, (response) => {
 				clearTimeout(timeout)
 				resolveResponse(response)
 			})
-			this.cli.stdin.write(
-				`${JSON.stringify({
-					jsonrpc: '2.0',
-					id,
-					method: 'tools/call',
-					params: { name, arguments: {} },
-				})}\n`
-			)
+			this.cli.stdin.write(`${JSON.stringify(request)}\n`)
 		})
 	}
 
@@ -143,6 +149,11 @@ test('enforces the Canvas Runtime bridge lifecycle and supports large context re
 		const canvasUrl = bridge.canvasUrl
 		if (!canvasUrl) throw new Error('CLI did not print a Canvas Runtime URL')
 
+		expect(
+			((await bridge.listTools('tools-list')).result as { tools: Array<{ name: string }> }).tools.map(
+				(tool) => tool.name
+			)
+		).toEqual(['canvas.get_context', 'canvas.apply_actions', 'canvas.capture', 'canvas.export'])
 		expect(errorCode(await bridge.request('unavailable'))).toBe('unavailable')
 		expect(errorCode(await bridge.request('validation', 'unknown-tool'))).toBe('validation')
 

@@ -1,10 +1,7 @@
 {
 	"compilerOptions": {
 		"outDir": "./.tsbuild",
-		"types": [
-			"@cloudflare/workers-types",
-			"node"
-		],
+		"types": ["node"],
 		"composite": true,
 		"declaration": true,
 		"declarationMap": true,
@@ -41,8 +38,7 @@
 	],
 	"include": [
 		"client",
-		"shared",
-		"worker"
+		"shared"
 	],
 	"files": [
 		"./vite.config.ts"
