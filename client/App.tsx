@@ -74,7 +74,7 @@ function App() {
 					const runtime = new CanvasRuntime(editor)
 					const bridge = CanvasBridge.connectFromLocation(
 						window.location,
-						(request) => {
+						async (request) => {
 							if (request.tool === 'canvas.get_context') {
 								return {
 									version: 1,
@@ -86,6 +86,12 @@ function App() {
 							}
 							if (request.tool === 'canvas.apply_actions') {
 								const outcome = runtime.applyActions(request.input)
+								return 'code' in outcome
+									? { version: 1, id: request.id, tool: request.tool, ok: false as const, error: outcome }
+									: { version: 1, id: request.id, tool: request.tool, ok: true as const, result: outcome }
+							}
+							if (request.tool === 'canvas.capture') {
+								const outcome = await runtime.capture(request.input)
 								return 'code' in outcome
 									? { version: 1, id: request.id, tool: request.tool, ok: false as const, error: outcome }
 									: { version: 1, id: request.id, tool: request.tool, ok: true as const, result: outcome }

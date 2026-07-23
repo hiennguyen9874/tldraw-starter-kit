@@ -1,4 +1,5 @@
 import {
+	Box,
 	Editor,
 	TLArrowShape,
 	TLFrameShape,
@@ -11,10 +12,13 @@ import {
 import {
 	ApplyActionsInput,
 	ApplyActionsResultSchema,
+	CaptureInput,
+	CaptureResultSchema,
 	CanvasDocument,
 	CanvasDocumentSchema,
 	CanvasItem,
 	GeometricCanvasItem,
+	Rect,
 	GetContextResultSchema,
 	Revision,
 	RevisionSchema,
@@ -26,6 +30,9 @@ export const CANVAS_RUNTIME_STORAGE_KEY = 'canvas-runtime-v1'
 const SUPPORTED_GEOS = new Set<string>(['rectangle', 'ellipse', 'diamond'])
 // Default geo strokes are 3.5 units wide and their draw-style paths extend slightly beyond the model box.
 const RENDERED_GEO_INK_MARGIN = 4
+const CAPTURE_PADDING = 32
+const MAX_RENDER_AREA = 16_000_000
+const MAX_ENCODED_ARTIFACT_BYTES = 16 * 1024 * 1024
 type CanvasShape = Parameters<Editor['createShapes']>[0][number]
 
 interface CanvasRuntimeStorage {
@@ -100,12 +107,74 @@ export class CanvasRuntime {
 		})
 	}
 
+	async capture(input: CaptureInput) {
+		this.flushSynchronization()
+		const observedRevision = this.revision
+		if (input.expectedRevision !== undefined && input.expectedRevision !== observedRevision) {
+			return {
+				code: 'stale_revision' as const,
+				expectedRevision: input.expectedRevision,
+				currentRevision: observedRevision,
+			}
+		}
+
+		const rect = input.rect ?? this.getDefaultCaptureRect()
+		if (rect.w * rect.h > MAX_RENDER_AREA) {
+			return captureValidationError(`Render area must not exceed ${MAX_RENDER_AREA} pixels`, 'rect')
+		}
+
+		const png = await this.renderCapture(rect)
+		if (png.size > MAX_ENCODED_ARTIFACT_BYTES) {
+			return captureValidationError(
+				`PNG must not exceed ${MAX_ENCODED_ARTIFACT_BYTES} bytes`,
+				'content.data'
+			)
+		}
+		const data = await blobToBase64(png)
+		if (data.length > MAX_ENCODED_ARTIFACT_BYTES) {
+			return captureValidationError(
+				`Encoded PNG response must not exceed ${MAX_ENCODED_ARTIFACT_BYTES} bytes`,
+				'content.data'
+			)
+		}
+
+		return CaptureResultSchema.parse({
+			revision: observedRevision,
+			rect,
+			content: { type: 'image', mimeType: 'image/png', data },
+		})
+	}
+
 	dispose() {
 		this.removeCanvasItemGuards()
 		this.removeStoreListener()
 		this.removePageHideListener()
 		this.restoreTransactionBoundaries()
 		this.flushSynchronization()
+	}
+
+	private async renderCapture(rect: Rect) {
+		const shapes = this.getSupportedShapes()
+		if (shapes.length === 0) return transparentPngBlob()
+		const { blob } = await this.editor.toImage(shapes, {
+			format: 'png',
+			bounds: new Box(rect.x, rect.y, rect.w, rect.h),
+			background: false,
+			padding: 0,
+			pixelRatio: 1,
+		})
+		return blob
+	}
+
+	private getDefaultCaptureRect(): Rect {
+		const contentBounds = this.getContentBounds()
+		if (!contentBounds) return { x: 0, y: 0, w: 1, h: 1 }
+		return {
+			x: contentBounds.x - CAPTURE_PADDING,
+			y: contentBounds.y - CAPTURE_PADDING,
+			w: contentBounds.w + CAPTURE_PADDING * 2,
+			h: contentBounds.h + CAPTURE_PADDING * 2,
+		}
 	}
 
 	private hydrateEditor() {
@@ -666,6 +735,28 @@ function uniquePublicIdForShape(shape: TLShape, usedIds: ReadonlySet<string>) {
 	let suffix = 2
 	while (usedIds.has(id)) id = `${baseId}-${suffix++}`
 	return id
+}
+
+function captureValidationError(message: string, field: string) {
+	return { code: 'validation' as const, issues: [{ message, field }] }
+}
+
+async function blobToBase64(blob: Blob) {
+	const bytes = new Uint8Array(await blob.arrayBuffer())
+	let binary = ''
+	for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+		binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000))
+	}
+	return btoa(binary)
+}
+
+function transparentPngBlob() {
+	const canvas = document.createElement('canvas')
+	canvas.width = 1
+	canvas.height = 1
+	return new Promise<Blob>((resolve, reject) =>
+		canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('Could not encode transparent PNG'))), 'image/png')
+	)
 }
 
 function plainText(richText: unknown): string {

@@ -88,6 +88,28 @@ async function handleMcpRequest(request) {
 						properties: { expectedRevision: { type: 'integer', minimum: 0 }, actions: { type: 'array', minItems: 1 } },
 					},
 				},
+				{
+					name: 'canvas.capture',
+					description: 'Capture a transparent PNG of Canvas Runtime diagram content.',
+					inputSchema: {
+						type: 'object',
+						additionalProperties: false,
+						properties: {
+							expectedRevision: { type: 'integer', minimum: 0 },
+							rect: {
+								type: 'object',
+								additionalProperties: false,
+								required: ['x', 'y', 'w', 'h'],
+								properties: {
+									x: { type: 'number' },
+									y: { type: 'number' },
+									w: { type: 'number', exclusiveMinimum: 0 },
+									h: { type: 'number', exclusiveMinimum: 0 },
+								},
+							},
+						},
+					},
+				},
 			],
 		})
 	}
@@ -100,7 +122,10 @@ async function handleMcpRequest(request) {
 	if (tool === 'canvas.apply_actions' && !isApplyActionsInput(input)) {
 		return writeMcpResult(request.id, toolError('validation', 'canvas.apply_actions requires a non-negative revision and actions'))
 	}
-	if (tool !== 'canvas.get_context' && tool !== 'canvas.apply_actions') {
+	if (tool === 'canvas.capture' && !isCaptureInput(input)) {
+		return writeMcpResult(request.id, toolError('validation', 'canvas.capture requires an object input'))
+	}
+	if (tool !== 'canvas.get_context' && tool !== 'canvas.apply_actions' && tool !== 'canvas.capture') {
 		return writeMcpResult(request.id, toolError('validation', 'Unknown Canvas Runtime tool'))
 	}
 	if (!activeRuntime?.registered) return writeMcpResult(request.id, toolError('unavailable'))
@@ -242,12 +267,26 @@ function handleRuntimeMessage(runtime, payload) {
 	clearTimeout(timeout)
 	pendingRequest = null
 	if (message.response.ok) {
-		writeMcpResult(mcpRequestId, {
-			content: [{ type: 'text', text: JSON.stringify(message.response.result) }],
-			structuredContent: message.response.result,
-		})
+		writeMcpResult(mcpRequestId, mcpSuccessResult(message.response))
 	} else {
 		writeMcpResult(mcpRequestId, toolError(message.response.error?.code ?? 'unavailable', undefined, message.response.error))
+	}
+}
+
+function mcpSuccessResult(response) {
+	if (response.tool === 'canvas.capture') {
+		const { revision, rect, content } = response.result
+		return {
+			content: [
+				{ type: 'image', mimeType: content.mimeType, data: content.data },
+				{ type: 'text', text: JSON.stringify({ revision, rect }) },
+			],
+			structuredContent: { revision, rect },
+		}
+	}
+	return {
+		content: [{ type: 'text', text: JSON.stringify(response.result) }],
+		structuredContent: response.result,
 	}
 }
 
@@ -256,7 +295,9 @@ function isRuntimeResponse(response) {
 		!isRecord(response) ||
 		response.version !== bridgeVersion ||
 		typeof response.id !== 'string' ||
-		(response.tool !== 'canvas.get_context' && response.tool !== 'canvas.apply_actions') ||
+		(response.tool !== 'canvas.get_context' &&
+			response.tool !== 'canvas.apply_actions' &&
+			response.tool !== 'canvas.capture') ||
 		typeof response.ok !== 'boolean'
 	) {
 		return false
@@ -276,6 +317,10 @@ function isApplyActionsInput(input) {
 		Array.isArray(input.actions) &&
 		input.actions.length > 0
 	)
+}
+
+function isCaptureInput(input) {
+	return isRecord(input)
 }
 
 function settlePending(runtime, code) {

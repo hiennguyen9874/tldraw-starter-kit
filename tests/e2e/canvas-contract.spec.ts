@@ -33,6 +33,7 @@ interface McpCanvasFixture {
 	canvasUrl: string
 	call(id: string, arguments_: object): Promise<unknown>
 	context(id: string): Promise<unknown>
+	tool(id: string, name: string, arguments_: object): Promise<unknown>
 }
 
 const test = base.extend<{ mcpCanvas: McpCanvasFixture }>({
@@ -67,6 +68,13 @@ const test = base.extend<{ mcpCanvas: McpCanvasFixture }>({
 						id,
 						method: 'tools/call',
 						params: { name: 'canvas.get_context', arguments: {} },
+					}),
+				tool: (id, name, arguments_) =>
+					sendMcpRequest(cli, {
+						jsonrpc: '2.0',
+						id,
+						method: 'tools/call',
+						params: { name, arguments: arguments_ },
 					}),
 			})
 		} finally {
@@ -116,6 +124,89 @@ test('gets canonical Canvas Runtime context through the real stdio MCP bridge', 
 		timeout: 5_000,
 	})
 })
+
+test('captures transparent Canvas Runtime PNGs through the real MCP bridge', async ({
+	page,
+	mcpCanvas: { call, tool },
+}) => {
+	const empty = await tool('capture-empty', 'canvas.capture', {})
+	expect(empty).toMatchObject({
+		result: {
+			content: [
+				{ type: 'image', mimeType: 'image/png' },
+				{ type: 'text', text: JSON.stringify({ revision: 0, rect: { x: 0, y: 0, w: 1, h: 1 } }) },
+			],
+			structuredContent: { revision: 0, rect: { x: 0, y: 0, w: 1, h: 1 } },
+		},
+	})
+	expect(pngDimensions(captureData(empty))).toEqual({ width: 1, height: 1 })
+	expect(await pngPixelAlpha(page, captureData(empty))).toBe(0)
+
+	await call('create-capture-node', {
+		expectedRevision: 0,
+		actions: [
+			{ type: 'create', item: { id: 'node', type: 'geo', geo: 'rectangle', x: 100, y: 100, w: 100, h: 80 } },
+		],
+	})
+	const padded = await tool('capture-padded', 'canvas.capture', {})
+	expect(padded).toMatchObject({
+		result: {
+			structuredContent: { revision: 1, rect: { x: 64, y: 64, w: 172, h: 152 } },
+		},
+	})
+	expect(pngDimensions(captureData(padded))).toEqual({ width: 172, height: 152 })
+
+	const clipped = await tool('capture-clipped', 'canvas.capture', { rect: { x: 1, y: 2, w: 3, h: 4 } })
+	expect(clipped).toMatchObject({
+		result: { structuredContent: { revision: 1, rect: { x: 1, y: 2, w: 3, h: 4 } } },
+	})
+	expect(pngDimensions(captureData(clipped))).toEqual({ width: 3, height: 4 })
+
+	expect(await tool('capture-stale', 'canvas.capture', { expectedRevision: 0 })).toMatchObject({
+		result: { isError: true, structuredContent: { error: { code: 'stale_revision', expectedRevision: 0, currentRevision: 1 } } },
+	})
+	expect(await tool('capture-invalid-rect', 'canvas.capture', { rect: { x: 0, y: 0, w: 0, h: 1 } })).toMatchObject({
+		result: { isError: true, structuredContent: { error: { code: 'validation', issues: [{ field: 'rect.w' }] } } },
+	})
+	expect(await tool('capture-oversized', 'canvas.capture', { rect: { x: 0, y: 0, w: 4_001, h: 4_000 } })).toMatchObject({
+		result: { isError: true, structuredContent: { error: { code: 'validation', issues: [{ field: 'rect' }] } } },
+	})
+
+	await page.evaluate(() => {
+		const toBlob = HTMLCanvasElement.prototype.toBlob
+		HTMLCanvasElement.prototype.toBlob = function (callback, ...args) {
+			toBlob.call(this, (blob) => {
+				callback(blob && new Blob([blob, new Uint8Array(16 * 1024 * 1024)], { type: blob.type }))
+			}, ...args)
+		}
+	})
+	expect(await tool('capture-oversized-payload', 'canvas.capture', { rect: { x: 0, y: 0, w: 1, h: 1 } })).toMatchObject({
+		result: { isError: true, structuredContent: { error: { code: 'validation', issues: [{ field: 'content.data' }] } } },
+	})
+})
+
+function captureData(response: unknown) {
+	const result = (response as { result: { content: Array<{ data?: string }> } }).result
+	const data = result.content[0]?.data
+	if (!data) throw new Error('Capture did not return MCP image data')
+	return data
+}
+
+function pngDimensions(base64: string) {
+	const png = Buffer.from(base64, 'base64')
+	return { width: png.readUInt32BE(16), height: png.readUInt32BE(20) }
+}
+
+function pngPixelAlpha(page: import('@playwright/test').Page, base64: string) {
+	return page.evaluate(async (data) => {
+		const bitmap = await createImageBitmap(await (await fetch(`data:image/png;base64,${data}`)).blob())
+		const canvas = document.createElement('canvas')
+		canvas.width = bitmap.width
+		canvas.height = bitmap.height
+		canvas.getContext('2d')?.drawImage(bitmap, 0, 0)
+		return canvas.getContext('2d')?.getImageData(0, 0, 1, 1).data[3]
+	}, base64)
+}
 
 test('applies a forward-referenced Canvas Item batch through the real MCP bridge', async ({
 	mcpCanvas: { cli },

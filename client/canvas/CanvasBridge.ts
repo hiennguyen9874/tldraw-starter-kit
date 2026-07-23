@@ -2,7 +2,7 @@ import { CanvasToolRequest, CanvasToolRequestSchema, CanvasToolResponse } from '
 
 export type CanvasBridgeStatus = 'connected' | 'reconnecting' | 'disconnected'
 
-type CanvasToolHandler = (request: CanvasToolRequest) => CanvasToolResponse
+type CanvasToolHandler = (request: CanvasToolRequest) => CanvasToolResponse | Promise<CanvasToolResponse>
 
 const BRIDGE_VERSION = 1
 const RECONNECT_DELAYS_MS = [250, 500, 1_000]
@@ -50,12 +50,12 @@ export class CanvasBridge {
 		this.socket.addEventListener('open', () => {
 			this.socket?.send(JSON.stringify({ version: BRIDGE_VERSION, type: 'register', token: this.token }))
 		})
-		this.socket.addEventListener('message', (event) => this.handleMessage(event.data))
+		this.socket.addEventListener('message', (event) => void this.handleMessage(event.data))
 		this.socket.addEventListener('close', () => this.reconnect())
 		this.socket.addEventListener('error', () => this.socket?.close())
 	}
 
-	private handleMessage(data: unknown) {
+	private async handleMessage(data: unknown) {
 		if (typeof data !== 'string') return this.socket?.close()
 		let message: unknown
 		try {
@@ -87,7 +87,7 @@ export class CanvasBridge {
 			this.socket?.send(JSON.stringify({ version: BRIDGE_VERSION, type: 'response', response }))
 			return
 		}
-		const response = this.handleTool(parsedRequest.data)
+		const response = await this.handleTool(parsedRequest.data)
 		this.socket?.send(JSON.stringify({ version: BRIDGE_VERSION, type: 'response', response }))
 	}
 
