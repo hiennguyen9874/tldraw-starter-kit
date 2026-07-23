@@ -77,6 +77,76 @@ test('lays out all geometric Canvas Items left-to-right with lexical topology an
 	})
 })
 
+test('lays out an explicit scope whose Canvas Items and Bound Arrow are created later in the batch', () => {
+	const result = proposeCanvasActions(
+		{ items: [] },
+		[
+			{ type: 'layout', direction: 'left-to-right', scope: { type: 'items', itemIds: ['node-a', 'node-b'] } },
+			{ type: 'create', item: { id: 'edge', type: 'arrow', fromId: 'node-a', toId: 'node-b' } },
+			{ type: 'create', item: { id: 'node-a', type: 'geo', geo: 'rectangle', x: 500, y: 100, w: 80, h: 60, text: '' } },
+			{ type: 'create', item: { id: 'node-b', type: 'geo', geo: 'ellipse', x: 100, y: 300, w: 100, h: 40, text: '' } },
+		]
+	)
+
+	expect(result).toEqual({
+		document: {
+			items: [
+				{ id: 'edge', type: 'arrow', fromId: 'node-a', toId: 'node-b' },
+				{ id: 'node-a', type: 'geo', geo: 'rectangle', x: 100, y: 100, w: 80, h: 60, text: '' },
+				{ id: 'node-b', type: 'geo', geo: 'ellipse', x: 300, y: 100, w: 100, h: 40, text: '' },
+			],
+		},
+		changedIds: ['edge', 'node-a', 'node-b'],
+		deletedIds: [],
+		layoutArrowDirections: new Map([['edge', 'left-to-right']]),
+	})
+})
+
+test('recomputes a frame created after laying out its existing members', () => {
+	const result = proposeCanvasActions(
+		CanvasDocumentSchema.parse({
+			items: [
+				{ id: 'node-a', type: 'geo', geo: 'rectangle', x: 500, y: 100, w: 80, h: 60 },
+				{ id: 'node-b', type: 'geo', geo: 'ellipse', x: 100, y: 300, w: 100, h: 40 },
+				{ id: 'edge', type: 'arrow', fromId: 'node-a', toId: 'node-b' },
+			],
+		}),
+		[
+			{ type: 'layout', direction: 'left-to-right', scope: { type: 'all' } },
+			{ type: 'create', item: { id: 'frame', type: 'frame', x: 0, y: 0, w: 1, h: 1, memberIds: ['node-a', 'node-b'] } },
+		]
+	)
+
+	if ('code' in result) throw new Error('Expected valid layout')
+	expect(result.document.items).toMatchObject([
+		{ id: 'edge', type: 'arrow', fromId: 'node-a', toId: 'node-b' },
+		{ id: 'frame', type: 'frame', x: 20, y: 20, w: 460, h: 220, memberIds: ['node-a', 'node-b'] },
+		{ id: 'node-a', type: 'geo', x: 100, y: 100, w: 80, h: 60 },
+		{ id: 'node-b', type: 'geo', x: 300, y: 100, w: 100, h: 40 },
+	])
+})
+
+test('uses updates after a deferred layout when anchoring a later layout', () => {
+	const result = proposeCanvasActions(
+		{ items: [] },
+		[
+			{ type: 'layout', direction: 'left-to-right', scope: { type: 'items', itemIds: ['node-a', 'node-b'] } },
+			{ type: 'create', item: { id: 'edge', type: 'arrow', fromId: 'node-a', toId: 'node-b' } },
+			{ type: 'create', item: { id: 'node-a', type: 'geo', geo: 'rectangle', x: 500, y: 100, w: 80, h: 60, text: '' } },
+			{ type: 'create', item: { id: 'node-b', type: 'geo', geo: 'ellipse', x: 100, y: 300, w: 100, h: 40, text: '' } },
+			{ type: 'update', id: 'node-a', patch: { type: 'geo', x: 1_000 } },
+			{ type: 'layout', direction: 'left-to-right', scope: { type: 'all' } },
+		]
+	)
+
+	if ('code' in result) throw new Error('Expected valid layouts')
+	expect(result.document.items).toMatchObject([
+		{ id: 'edge', type: 'arrow', fromId: 'node-a', toId: 'node-b' },
+		{ id: 'node-a', type: 'geo', x: 300, y: 100, w: 80, h: 60 },
+		{ id: 'node-b', type: 'geo', x: 500, y: 100, w: 100, h: 40 },
+	])
+})
+
 test('lays out a frame top-to-bottom, breaks cycles lexically, and resizes around stationary text', () => {
 	const result = proposeCanvasActions(
 		CanvasDocumentSchema.parse({

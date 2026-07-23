@@ -57,28 +57,35 @@ export function proposeCanvasActions(
 	const changedIds: string[] = []
 	const deletedIds: string[] = []
 	const layoutArrowDirections = new Map<string, LayoutDirection | undefined>()
+	const deferredLayoutPositions = new Map<string, LayoutPosition>()
+	const layoutMovedIds = new Set<string>()
 	let hasLayout = false
 
 	for (const [index, action] of actions.entries()) {
 		if (action.type === 'layout') {
 			hasLayout = true
-			const layout = layoutCanvasItems(items, action.scope, action.direction)
+			const layoutItems = getLayoutItems(items, actions, index + 1, deferredLayoutPositions)
+			const layout = layoutCanvasItems(layoutItems, action.scope, action.direction)
 			if ('field' in layout) return validation(index, layout.field, layout.message)
 
 			for (const [id, position] of layout.positions) {
+				layoutMovedIds.add(id)
 				const item = items.get(id)
-				if (!item || item.type !== 'geo') continue
+				if (!item || item.type !== 'geo') {
+					deferredLayoutPositions.set(id, position)
+					continue
+				}
 				items.set(id, { ...item, ...position })
 				addUnique(changedIds, id)
 			}
 			const internalArrowIds = new Set(layout.internalArrowIds)
 			resizeAffectedFrames(items, layout.positions.keys(), changedIds)
-			for (const item of items.values()) {
+			for (const item of layoutItems.values()) {
 				if (
 					item.type !== 'arrow' ||
 					(!layout.positions.has(item.fromId) && !layout.positions.has(item.toId))
 				) continue
-				addUnique(changedIds, item.id)
+				if (items.has(item.id)) addUnique(changedIds, item.id)
 				layoutArrowDirections.set(
 					item.id,
 					internalArrowIds.has(item.id) ? action.direction : undefined
@@ -91,12 +98,16 @@ export function proposeCanvasActions(
 			if (items.has(action.item.id)) {
 				return validation(index, 'item.id', `Canvas Item ID "${action.item.id}" already exists`)
 			}
-			items.set(action.item.id, action.item)
+			const position = deferredLayoutPositions.get(action.item.id)
+			const item =
+				action.item.type === 'geo' && position ? { ...action.item, ...position } : action.item
+			items.set(item.id, item)
+			deferredLayoutPositions.delete(item.id)
 			actionSources.set(
-				action.item.id,
-				new Map(Object.keys(action.item).map((field) => [field, { index, fieldPrefix: 'item' }]))
+				item.id,
+				new Map(Object.keys(item).map((field) => [field, { index, fieldPrefix: 'item' }]))
 			)
-			addUnique(changedIds, action.item.id)
+			addUnique(changedIds, item.id)
 			continue
 		}
 
@@ -119,6 +130,8 @@ export function proposeCanvasActions(
 
 		removeItem(action.id, items, changedIds, deletedIds, actionSources, index)
 	}
+
+	resizeAffectedFrames(items, layoutMovedIds, changedIds)
 
 	const parsed = CanvasDocumentSchema.safeParse({ items: [...items.values()] })
 	if (!parsed.success) {
@@ -145,6 +158,25 @@ export function proposeCanvasActions(
 		deletedIds,
 		...(hasLayout ? { layoutArrowDirections } : {}),
 	}
+}
+
+function getLayoutItems(
+	items: Map<string, CanvasItem>,
+	actions: CanvasAction[],
+	startIndex: number,
+	deferredLayoutPositions: ReadonlyMap<string, LayoutPosition>
+) {
+	const layoutItems = new Map(items)
+	for (let index = startIndex; index < actions.length; index++) {
+		const action = actions[index]
+		if (action.type !== 'create' || layoutItems.has(action.item.id)) continue
+		layoutItems.set(action.item.id, action.item)
+	}
+	for (const [id, position] of deferredLayoutPositions) {
+		const item = layoutItems.get(id)
+		if (item?.type === 'geo') layoutItems.set(id, { ...item, ...position })
+	}
+	return layoutItems
 }
 
 function layoutCanvasItems(
@@ -352,6 +384,28 @@ function getLayers(component: LayoutComponent) {
 		.map(([, ids]) => ids.sort(compareIds))
 }
 
+export interface CanvasBounds {
+	x: number
+	y: number
+	w: number
+	h: number
+}
+
+export function getPaddedBounds(bounds: Iterable<CanvasBounds>, padding = ITEM_GAP): CanvasBounds | null {
+	const members = [...bounds]
+	if (members.length === 0) return null
+	const minX = Math.min(...members.map((member) => member.x))
+	const minY = Math.min(...members.map((member) => member.y))
+	const maxX = Math.max(...members.map((member) => member.x + member.w))
+	const maxY = Math.max(...members.map((member) => member.y + member.h))
+	return {
+		x: minX - padding,
+		y: minY - padding,
+		w: maxX - minX + padding * 2,
+		h: maxY - minY + padding * 2,
+	}
+}
+
 function resizeAffectedFrames(
 	items: Map<string, CanvasItem>,
 	movedIds: Iterable<string>,
@@ -360,30 +414,15 @@ function resizeAffectedFrames(
 	const moved = new Set(movedIds)
 	for (const frame of items.values()) {
 		if (frame.type !== 'frame' || !frame.memberIds.some((id) => moved.has(id))) continue
-		const members = frame.memberIds.flatMap((id) => {
-			const item = items.get(id)
-			if (!item || (item.type !== 'geo' && item.type !== 'text')) return []
-			return [
-				{
-					x: item.x,
-					y: item.y,
-					w: item.type === 'geo' ? item.w : 0,
-					h: item.type === 'geo' ? item.h : 0,
-				},
-			]
-		})
-		if (members.length === 0) continue
-		const minX = Math.min(...members.map((member) => member.x))
-		const minY = Math.min(...members.map((member) => member.y))
-		const maxX = Math.max(...members.map((member) => member.x + member.w))
-		const maxY = Math.max(...members.map((member) => member.y + member.h))
-		items.set(frame.id, {
-			...frame,
-			x: minX - ITEM_GAP,
-			y: minY - ITEM_GAP,
-			w: maxX - minX + ITEM_GAP * 2,
-			h: maxY - minY + ITEM_GAP * 2,
-		})
+		const bounds = getPaddedBounds(
+			frame.memberIds.flatMap((id) => {
+				const item = items.get(id)
+				if (!item || (item.type !== 'geo' && item.type !== 'text')) return []
+				return [{ x: item.x, y: item.y, w: item.type === 'geo' ? item.w : 0, h: item.type === 'geo' ? item.h : 0 }]
+			})
+		)
+		if (!bounds) continue
+		items.set(frame.id, { ...frame, ...bounds })
 		addUnique(changedIds, frame.id)
 	}
 }

@@ -19,7 +19,7 @@ import {
 	Revision,
 	RevisionSchema,
 } from '../../shared/canvas-contract'
-import { LayoutDirection, proposeCanvasActions } from './proposeCanvasActions'
+import { getPaddedBounds, LayoutDirection, proposeCanvasActions } from './proposeCanvasActions'
 
 export const CANVAS_RUNTIME_STORAGE_KEY = 'canvas-runtime-v1'
 
@@ -183,12 +183,8 @@ export class CanvasRuntime {
 				const bounds = this.editor.getShapePageBounds(shape)
 				return bounds ? [{ x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h }] : []
 			})
-			if (memberBounds.length === 0) return item
-			const minX = Math.min(...memberBounds.map((bounds) => bounds.x))
-			const minY = Math.min(...memberBounds.map((bounds) => bounds.y))
-			const maxX = Math.max(...memberBounds.map((bounds) => bounds.x + bounds.w))
-			const maxY = Math.max(...memberBounds.map((bounds) => bounds.y + bounds.h))
-			return { ...item, x: minX - 80, y: minY - 80, w: maxX - minX + 160, h: maxY - minY + 160 }
+			const bounds = getPaddedBounds(memberBounds)
+			return bounds ? { ...item, ...bounds } : item
 		})
 		return { items }
 	}

@@ -183,6 +183,37 @@ test('lays out Canvas Items through the real MCP bridge', async ({
 	})
 })
 
+test('lays out a forward-referenced scope and preserves its observable Bound Arrow through MCP context', async ({
+	mcpCanvas: { call, context },
+}) => {
+	const layout = await call('forward-layout', {
+		expectedRevision: 0,
+		actions: [
+			{ type: 'layout', direction: 'left-to-right', scope: { type: 'items', itemIds: ['node-a', 'node-b'] } },
+			{ type: 'create', item: { id: 'edge', type: 'arrow', fromId: 'node-a', toId: 'node-b' } },
+			{ type: 'create', item: { id: 'node-a', type: 'geo', geo: 'rectangle', x: 500, y: 100, w: 80, h: 60 } },
+			{ type: 'create', item: { id: 'node-b', type: 'geo', geo: 'ellipse', x: 100, y: 300, w: 100, h: 40 } },
+		],
+	})
+	expect(layout).toMatchObject({
+		result: { structuredContent: { revision: 1, changedIds: ['edge', 'node-a', 'node-b'], deletedIds: [] } },
+	})
+	expect(await context('forward-layout-context')).toMatchObject({
+		result: {
+			structuredContent: {
+				revision: 1,
+				document: {
+					items: [
+						{ id: 'edge', type: 'arrow', fromId: 'node-a', toId: 'node-b' },
+						{ id: 'node-a', type: 'geo', x: 100, y: 100, w: 80, h: 60 },
+						{ id: 'node-b', type: 'geo', x: 300, y: 100, w: 100, h: 40 },
+					],
+				},
+			},
+		},
+	})
+})
+
 test('deletes direct Canvas Items, including multi-selections, through shared actions', async ({
 	page,
 	mcpCanvas: { call, context },
@@ -260,6 +291,11 @@ test('rejects invalid and stale batches without creating a Canvas Runtime histor
 	const invalidField = await call('invalid-field', { expectedRevision: 2, actions: [{ type: 'create', item: { id: 'bad-size', type: 'geo', geo: 'rectangle', x: 0, y: 0, w: -1, h: -1 } }] })
 	expect(invalidField).toMatchObject({ result: { isError: true, structuredContent: { error: { code: 'validation', issues: [{ actionIndex: 0, field: 'item.w' }] } } } })
 	expect((invalidField as { result: { structuredContent: { error: { issues: unknown[] } } } }).result.structuredContent.error.issues).toHaveLength(1)
+	const invalidLayout = await call('invalid-layout', {
+		expectedRevision: 2,
+		actions: [{ type: 'layout', direction: 'left-to-right', scope: { type: 'items', itemIds: ['label'] } }],
+	})
+	expect(invalidLayout).toMatchObject({ result: { isError: true, structuredContent: { error: { code: 'validation', issues: [{ actionIndex: 0, field: 'scope.itemIds.0' }] } } } })
 	expect(await context('unchanged')).toMatchObject({ result: { structuredContent: { revision: 2, document: { items: [{ id: 'label', type: 'text', text: 'Published', x: 0, y: 0 }] } } } })
 
 	await page.keyboard.press('Control+z')
