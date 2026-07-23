@@ -78,16 +78,30 @@ async function handleMcpRequest(request) {
 					description: 'Get the canonical context of the active Canvas Runtime.',
 					inputSchema: { type: 'object', additionalProperties: false, properties: {} },
 				},
+				{
+					name: 'canvas.apply_actions',
+					description: 'Atomically apply revision-safe Canvas Item actions.',
+					inputSchema: {
+						type: 'object',
+						required: ['expectedRevision', 'actions'],
+						additionalProperties: false,
+						properties: { expectedRevision: { type: 'integer', minimum: 0 }, actions: { type: 'array', minItems: 1 } },
+					},
+				},
 			],
 		})
 	}
 	if (request.method !== 'tools/call') return writeMcpError(request.id, -32601, 'Method not found')
-	if (request.params?.name !== 'canvas.get_context') {
-		return writeMcpResult(request.id, toolError('validation', 'Unknown Canvas Runtime tool'))
-	}
-	const input = request.params.arguments ?? {}
-	if (!isRecord(input) || Object.keys(input).length !== 0) {
+	const input = request.params?.arguments ?? {}
+	const tool = request.params?.name
+	if (tool === 'canvas.get_context' && (!isRecord(input) || Object.keys(input).length !== 0)) {
 		return writeMcpResult(request.id, toolError('validation', 'canvas.get_context does not accept arguments'))
+	}
+	if (tool === 'canvas.apply_actions' && !isApplyActionsInput(input)) {
+		return writeMcpResult(request.id, toolError('validation', 'canvas.apply_actions requires a non-negative revision and actions'))
+	}
+	if (tool !== 'canvas.get_context' && tool !== 'canvas.apply_actions') {
+		return writeMcpResult(request.id, toolError('validation', 'Unknown Canvas Runtime tool'))
 	}
 	if (!activeRuntime?.registered) return writeMcpResult(request.id, toolError('unavailable'))
 	if (pendingRequest) return writeMcpResult(request.id, toolError('busy'))
@@ -105,12 +119,7 @@ async function handleMcpRequest(request) {
 	runtime.send({
 		version: bridgeVersion,
 		type: 'request',
-		request: {
-			version: bridgeVersion,
-			id: bridgeRequestId,
-			tool: 'canvas.get_context',
-			input,
-		},
+		request: { version: bridgeVersion, id: bridgeRequestId, tool, input },
 	})
 }
 
@@ -238,7 +247,7 @@ function handleRuntimeMessage(runtime, payload) {
 			structuredContent: message.response.result,
 		})
 	} else {
-		writeMcpResult(mcpRequestId, toolError(message.response.error?.code ?? 'unavailable'))
+		writeMcpResult(mcpRequestId, toolError(message.response.error?.code ?? 'unavailable', undefined, message.response.error))
 	}
 }
 
@@ -247,7 +256,7 @@ function isRuntimeResponse(response) {
 		!isRecord(response) ||
 		response.version !== bridgeVersion ||
 		typeof response.id !== 'string' ||
-		response.tool !== 'canvas.get_context' ||
+		(response.tool !== 'canvas.get_context' && response.tool !== 'canvas.apply_actions') ||
 		typeof response.ok !== 'boolean'
 	) {
 		return false
@@ -257,6 +266,16 @@ function isRuntimeResponse(response) {
 
 function isRecord(value) {
 	return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isApplyActionsInput(input) {
+	return (
+		isRecord(input) &&
+		Number.isInteger(input.expectedRevision) &&
+		input.expectedRevision >= 0 &&
+		Array.isArray(input.actions) &&
+		input.actions.length > 0
+	)
 }
 
 function settlePending(runtime, code) {
@@ -273,8 +292,8 @@ function disconnectRuntime(runtime) {
 	settlePending(runtime, 'unavailable')
 }
 
-function toolError(code, message = code) {
-	return { content: [{ type: 'text', text: message }], isError: true, structuredContent: { error: { code } } }
+function toolError(code, message = code, error = { code }) {
+	return { content: [{ type: 'text', text: message }], isError: true, structuredContent: { error } }
 }
 
 function writeMcpResult(id, result) {

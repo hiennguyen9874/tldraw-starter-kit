@@ -81,7 +81,12 @@ export class CanvasBridge {
 		if (message.type !== 'request') return this.socket?.close()
 
 		const parsedRequest = CanvasToolRequestSchema.safeParse(message.request)
-		if (!parsedRequest.success) return this.socket?.close()
+		if (!parsedRequest.success) {
+			const response = validationResponse(message.request, parsedRequest.error.issues)
+			if (!response) return this.socket?.close()
+			this.socket?.send(JSON.stringify({ version: BRIDGE_VERSION, type: 'response', response }))
+			return
+		}
 		const response = this.handleTool(parsedRequest.data)
 		this.socket?.send(JSON.stringify({ version: BRIDGE_VERSION, type: 'response', response }))
 	}
@@ -95,6 +100,33 @@ export class CanvasBridge {
 		}
 		this.setStatus('reconnecting')
 		window.setTimeout(() => this.connect(), delay)
+	}
+}
+
+function validationResponse(
+	request: unknown,
+	issues: Array<{ message: string; path: PropertyKey[] }>
+): CanvasToolResponse | undefined {
+	if (!isRecord(request) || typeof request.id !== 'string') return undefined
+	if (!['canvas.get_context', 'canvas.apply_actions', 'canvas.capture', 'canvas.export'].includes(String(request.tool))) {
+		return undefined
+	}
+	const firstIssue = issues
+		.map((issue) => {
+			const actionIndex =
+				issue.path[0] === 'input' && issue.path[1] === 'actions' && typeof issue.path[2] === 'number'
+					? issue.path[2]
+					: undefined
+			const field = issue.path.slice(actionIndex === undefined ? 1 : 3).join('.')
+			return { message: issue.message, actionIndex, ...(field ? { field } : {}) }
+		})
+		.sort((left, right) => (left.actionIndex ?? -1) - (right.actionIndex ?? -1))[0]
+	return {
+		version: 1,
+		id: request.id,
+		tool: request.tool as CanvasToolResponse['tool'],
+		ok: false,
+		error: { code: 'validation', issues: [firstIssue] },
 	}
 }
 

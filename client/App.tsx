@@ -75,15 +75,27 @@ function App() {
 					const bridge = CanvasBridge.connectFromLocation(
 						window.location,
 						(request) => {
-							if (request.tool !== 'canvas.get_context') {
-								throw new Error(`Unsupported Canvas Runtime tool: ${request.tool}`)
+							if (request.tool === 'canvas.get_context') {
+								return {
+									version: 1,
+									id: request.id,
+									tool: request.tool,
+									ok: true,
+									result: runtime.getContext(),
+								}
+							}
+							if (request.tool === 'canvas.apply_actions') {
+								const outcome = runtime.applyActions(request.input)
+								return 'code' in outcome
+									? { version: 1, id: request.id, tool: request.tool, ok: false as const, error: outcome }
+									: { version: 1, id: request.id, tool: request.tool, ok: true as const, result: outcome }
 							}
 							return {
 								version: 1,
 								id: request.id,
 								tool: request.tool,
-								ok: true,
-								result: runtime.getContext(),
+								ok: false as const,
+								error: { code: 'validation' as const, issues: [{ message: 'Unsupported Canvas Runtime tool' }] },
 							}
 						},
 						setBridgeStatus

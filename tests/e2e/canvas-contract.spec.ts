@@ -75,6 +75,106 @@ test('gets canonical Canvas Runtime context through the real stdio MCP bridge', 
 	}
 })
 
+test('applies a forward-referenced Canvas Item batch through the real MCP bridge', async ({ page }) => {
+	const cli = spawn(process.execPath, [resolve('cli/canvas-mcp.mjs')], {
+		stdio: ['pipe', 'pipe', 'pipe'],
+		env: { ...process.env, CANVAS_URL: 'http://127.0.0.1:4173/' },
+	})
+	let stderr = ''
+	cli.stderr.setEncoding('utf8')
+	cli.stderr.on('data', (chunk) => {
+		stderr += chunk
+	})
+
+	try {
+		await expect.poll(() => stderr.match(/Canvas Runtime URL: (.+)/)?.[1]).toBeTruthy()
+		const canvasUrl = stderr.match(/Canvas Runtime URL: (.+)/)?.[1]
+		if (!canvasUrl) throw new Error('Canvas MCP CLI did not print a Canvas Runtime URL')
+		await page.goto(canvasUrl)
+		await expect(page.getByText('Bridge connected')).toBeVisible()
+
+		const response = await sendMcpRequest(cli, {
+			jsonrpc: '2.0',
+			id: 'actions-1',
+			method: 'tools/call',
+			params: {
+				name: 'canvas.apply_actions',
+				arguments: {
+					expectedRevision: 0,
+					actions: [
+						{ type: 'create', item: { id: 'group', type: 'frame', x: 0, y: 0, w: 400, h: 200, memberIds: ['node-a', 'node-b'] } },
+						{ type: 'create', item: { id: 'edge', type: 'arrow', fromId: 'node-a', toId: 'node-b' } },
+						{ type: 'create', item: { id: 'node-a', type: 'geo', geo: 'rectangle', x: 0, y: 0, w: 100, h: 80 } },
+						{ type: 'create', item: { id: 'node-b', type: 'geo', geo: 'ellipse', x: 200, y: 0, w: 100, h: 80 } },
+					],
+				},
+			},
+		})
+		expect(response).toMatchObject({
+			result: {
+				structuredContent: {
+					revision: 1,
+					changedIds: ['group', 'edge', 'node-a', 'node-b'],
+					deletedIds: [],
+				},
+			},
+		})
+	} finally {
+		if (cli.exitCode === null && cli.signalCode === null) {
+			const exit = once(cli, 'exit')
+			cli.kill()
+			await exit
+		}
+	}
+})
+
+test('rejects invalid and stale batches without creating a Canvas Runtime history entry', async ({ page }) => {
+	const cli = spawn(process.execPath, [resolve('cli/canvas-mcp.mjs')], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, CANVAS_URL: 'http://127.0.0.1:4173/' } })
+	let stderr = ''
+	cli.stderr.setEncoding('utf8')
+	cli.stderr.on('data', (chunk) => { stderr += chunk })
+	const call = (id: string, arguments_: object) => sendMcpRequest(cli, { jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'canvas.apply_actions', arguments: arguments_ } })
+	const context = (id: string) => sendMcpRequest(cli, { jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'canvas.get_context', arguments: {} } })
+
+	try {
+		await expect.poll(() => stderr.match(/Canvas Runtime URL: (.+)/)?.[1]).toBeTruthy()
+		const canvasUrl = stderr.match(/Canvas Runtime URL: (.+)/)?.[1]
+		if (!canvasUrl) throw new Error('Canvas MCP CLI did not print a Canvas Runtime URL')
+		await page.goto(canvasUrl)
+		await expect(page.getByText('Bridge connected')).toBeVisible()
+
+		await call('create', { expectedRevision: 0, actions: [
+			{ type: 'create', item: { id: 'label', type: 'text', x: 0, y: 0, text: 'Draft' } },
+			{ type: 'create', item: { id: 'obsolete', type: 'text', x: 0, y: 100, text: 'Remove me' } },
+		] })
+		const updated = await call('update-delete', { expectedRevision: 1, actions: [
+			{ type: 'update', id: 'label', patch: { type: 'text', text: 'Published' } },
+			{ type: 'delete', id: 'obsolete' },
+		] })
+		expect(updated).toMatchObject({ result: { structuredContent: { revision: 2, changedIds: ['label'], deletedIds: ['obsolete'] } } })
+
+		const invalid = await call('invalid', { expectedRevision: 2, actions: [
+			{ type: 'create', item: { id: 'broken', type: 'arrow', fromId: 'missing', toId: 'label' } },
+		] })
+		expect(invalid).toMatchObject({ result: { isError: true, structuredContent: { error: { code: 'validation', issues: [{ actionIndex: 0, field: 'item.fromId' }] } } } })
+		const invalidField = await call('invalid-field', { expectedRevision: 2, actions: [{ type: 'create', item: { id: 'bad-size', type: 'geo', geo: 'rectangle', x: 0, y: 0, w: -1, h: -1 } }] })
+		expect(invalidField).toMatchObject({ result: { isError: true, structuredContent: { error: { code: 'validation', issues: [{ actionIndex: 0, field: 'item.w' }] } } } })
+		expect((invalidField as { result: { structuredContent: { error: { issues: unknown[] } } } }).result.structuredContent.error.issues).toHaveLength(1)
+		expect(await context('unchanged')).toMatchObject({ result: { structuredContent: { revision: 2, document: { items: [{ id: 'label', type: 'text', text: 'Published', x: 0, y: 0 }] } } } })
+
+		await page.keyboard.press('Control+z')
+		expect(await context('undo')).toMatchObject({ result: { structuredContent: { revision: 3, document: { items: [{ id: 'label', type: 'text', text: 'Draft', x: 0, y: 0 }, { id: 'obsolete', type: 'text', text: 'Remove me', x: 0, y: 100 }] } } } })
+		const stale = await call('stale', { expectedRevision: 0, actions: [{ type: 'delete', id: 'label' }] })
+		expect(stale).toMatchObject({ result: { isError: true, structuredContent: { error: { code: 'stale_revision', expectedRevision: 0, currentRevision: 3 } } } })
+	} finally {
+		if (cli.exitCode === null && cli.signalCode === null) {
+			const exit = once(cli, 'exit')
+			cli.kill()
+			await exit
+		}
+	}
+})
+
 function sendMcpRequest(
 	cli: ReturnType<typeof spawn>,
 	request: Record<string, unknown>
