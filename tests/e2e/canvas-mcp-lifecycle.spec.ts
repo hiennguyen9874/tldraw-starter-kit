@@ -195,7 +195,9 @@ test('enforces the Canvas Runtime bridge lifecycle and supports large context re
 
 		const disconnectedCall = bridge.request('disconnect')
 		await secondRuntime.nextMessage()
+		const disconnected = secondRuntime.waitForClose()
 		secondRuntime.socket.close()
+		await disconnected
 		expect(errorCode(await disconnectedCall)).toBe('unavailable')
 
 		const thirdRuntime = await FakeRuntime.connect(canvasUrl)

@@ -177,6 +177,7 @@ function createRuntimeConnection(socket) {
 		close() {
 			if (closed) return
 			closed = true
+			disconnectRuntime(runtime)
 			socket.end(encodeWebSocketFrame(0x8, Buffer.alloc(0)))
 		},
 		read(chunk) {
