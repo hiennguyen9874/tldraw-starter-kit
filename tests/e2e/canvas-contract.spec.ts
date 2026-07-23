@@ -6,7 +6,9 @@ import { resolve } from 'node:path'
 interface BrowserCanvasTestFacade {
 	getContext(): {
 		revision: number
-		document: { items: Array<{ id: string; type: string; text?: string; geo?: string }> }
+		document: {
+			items: Array<{ id: string; type: string; text?: string; geo?: string; memberIds?: string[] }>
+		}
 		contentBounds: { x: number; y: number; w: number; h: number } | null
 	}
 }
@@ -141,6 +143,50 @@ test('applies a forward-referenced Canvas Item batch through the real MCP bridge
 				revision: 1,
 				changedIds: ['group', 'edge', 'node-a', 'node-b'],
 				deletedIds: [],
+			},
+		},
+	})
+})
+
+test('deletes direct nodes with their Bound Arrows and detaches them from frames', async ({
+	page,
+	mcpCanvas: { call, context },
+}) => {
+	await call('create-topology', {
+		expectedRevision: 0,
+		actions: [
+			{
+				type: 'create',
+				item: { id: 'group', type: 'frame', x: 50, y: 50, w: 500, h: 200, memberIds: ['node-a'] },
+			},
+			{
+				type: 'create',
+				item: { id: 'edge', type: 'arrow', fromId: 'node-a', toId: 'node-b' },
+			},
+			{
+				type: 'create',
+				item: { id: 'node-a', type: 'geo', geo: 'rectangle', x: 100, y: 100, w: 100, h: 80 },
+			},
+			{
+				type: 'create',
+				item: { id: 'node-b', type: 'geo', geo: 'ellipse', x: 400, y: 100, w: 100, h: 80 },
+			},
+		],
+	})
+
+	await page.mouse.click(120, 120)
+	await page.keyboard.press('Delete')
+
+	await expect.poll(() => context('direct-delete')).toMatchObject({
+		result: {
+			structuredContent: {
+				revision: 2,
+				document: {
+					items: [
+						{ id: 'group', type: 'frame', memberIds: [] },
+						{ id: 'node-b', type: 'geo' },
+					],
+				},
 			},
 		},
 	})

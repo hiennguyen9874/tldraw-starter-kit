@@ -43,6 +43,7 @@ export class CanvasRuntime {
 	private document: CanvasDocument
 	private revision: Revision
 	private isSynchronizing = false
+	private isReplayingHistory = false
 	private synchronizationTimer: ReturnType<typeof setTimeout> | undefined
 	private readonly removeCanvasItemGuards: () => void
 	private readonly removeStoreListener: () => void
@@ -148,10 +149,27 @@ export class CanvasRuntime {
 					: shapeBefore
 			}
 		)
+		const removeBeforeDelete = this.editor.sideEffects.registerBeforeDeleteHandler('shape', (shape) => {
+			if (this.isSynchronizing || this.isReplayingHistory || !isSupportedShape(shape)) return
+			const id = getPublicId(shape)
+			if (!id) return false
+
+			const proposed = proposeCanvasActions(this.document, [{ type: 'delete', id }])
+			if ('code' in proposed) return false
+
+			this.isSynchronizing = true
+			try {
+				this.replaceDocument(proposed.document)
+			} finally {
+				this.isSynchronizing = false
+			}
+			return false
+		})
 
 		return () => {
 			removeBeforeCreate()
 			removeBeforeChange()
+			removeBeforeDelete()
 		}
 	}
 
@@ -167,11 +185,21 @@ export class CanvasRuntime {
 		}
 		this.editor.undo = () => {
 			this.flushSynchronization()
-			return originalUndo.call(this.editor)
+			this.isReplayingHistory = true
+			try {
+				return originalUndo.call(this.editor)
+			} finally {
+				this.isReplayingHistory = false
+			}
 		}
 		this.editor.redo = () => {
 			this.flushSynchronization()
-			return originalRedo.call(this.editor)
+			this.isReplayingHistory = true
+			try {
+				return originalRedo.call(this.editor)
+			} finally {
+				this.isReplayingHistory = false
+			}
 		}
 
 		return () => {

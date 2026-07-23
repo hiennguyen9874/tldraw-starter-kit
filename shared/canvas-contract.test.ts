@@ -97,6 +97,38 @@ describe('Canvas Item contract', () => {
 		).toThrow()
 	})
 
+	it('rejects Bound Arrows and frames that violate Canvas Item topology', () => {
+		expect(() =>
+			CanvasDocumentSchema.parse({
+				items: [
+					{ id: 'label', type: 'text', x: 0, y: 0, text: 'Not a node' },
+					{ id: 'node', type: 'geo', geo: 'rectangle', x: 0, y: 0, w: 100, h: 100 },
+					{ id: 'edge', type: 'arrow', fromId: 'label', toId: 'node' },
+				],
+			})
+		).toThrow()
+
+		expect(() =>
+			CanvasDocumentSchema.parse({
+				items: [
+					{ id: 'node', type: 'geo', geo: 'rectangle', x: 0, y: 0, w: 100, h: 100 },
+					{ id: 'inner', type: 'frame', x: 0, y: 0, w: 100, h: 100, memberIds: [] },
+					{ id: 'outer', type: 'frame', x: 0, y: 0, w: 100, h: 100, memberIds: ['inner', 'node'] },
+				],
+			})
+		).toThrow()
+
+		expect(() =>
+			CanvasDocumentSchema.parse({
+				items: [
+					{ id: 'node', type: 'geo', geo: 'rectangle', x: 0, y: 0, w: 100, h: 100 },
+					{ id: 'frame-a', type: 'frame', x: 0, y: 0, w: 100, h: 100, memberIds: ['node'] },
+					{ id: 'frame-b', type: 'frame', x: 200, y: 0, w: 100, h: 100, memberIds: ['node'] },
+				],
+			})
+		).toThrow()
+	})
+
 	it('validates revisioned tool requests and structured stale-revision errors', () => {
 		expect(
 			CanvasToolRequestSchema.parse({
