@@ -257,9 +257,7 @@ function handleRuntimeMessage(runtime, payload) {
 		return runtime.close()
 	}
 	if (!runtime.registered) {
-		if (message?.version !== bridgeVersion || message?.type !== 'register' || message?.token !== token) {
-			return runtime.close()
-		}
+		if (!isRegistrationMessage(message)) return runtime.close()
 		if (activeRuntime && activeRuntime !== runtime) {
 			settlePending(activeRuntime, 'replaced')
 			activeRuntime.send({ version: bridgeVersion, type: 'replaced' })
@@ -305,6 +303,16 @@ function mcpSuccessResult(response) {
 		content: [{ type: 'text', text: JSON.stringify(response.result) }],
 		structuredContent: response.result,
 	}
+}
+
+function isRegistrationMessage(message) {
+	return (
+		isRecord(message) &&
+		Object.keys(message).length === 3 &&
+		message.version === bridgeVersion &&
+		message.type === 'register' &&
+		message.token === token
+	)
 }
 
 function isRuntimeResponse(response) {

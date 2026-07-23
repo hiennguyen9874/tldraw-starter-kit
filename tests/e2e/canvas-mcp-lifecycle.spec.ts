@@ -146,8 +146,28 @@ test('enforces the Canvas Runtime bridge lifecycle and supports large context re
 		expect(errorCode(await bridge.request('unavailable'))).toBe('unavailable')
 		expect(errorCode(await bridge.request('validation', 'unknown-tool'))).toBe('validation')
 
+		const token = new URLSearchParams(new URL(canvasUrl).hash.slice(1)).get('canvas-bridge-token')
+		if (!token) throw new Error('Canvas URL has no bridge token')
 		const malformedRuntime = await FakeRuntime.connect(canvasUrl, undefined, '{')
 		await malformedRuntime.waitForClose()
+		const malformedEnvelopeRuntime = await FakeRuntime.connect(
+			canvasUrl,
+			undefined,
+			JSON.stringify({ version: 1, type: 'register', token, extra: true })
+		)
+		await malformedEnvelopeRuntime.waitForClose()
+		const outOfOrderRuntime = await FakeRuntime.connect(
+			canvasUrl,
+			undefined,
+			JSON.stringify({ version: 1, type: 'response', response: {} })
+		)
+		await outOfOrderRuntime.waitForClose()
+		const incompatibleRuntime = await FakeRuntime.connect(
+			canvasUrl,
+			undefined,
+			JSON.stringify({ version: 2, type: 'register', token })
+		)
+		await incompatibleRuntime.waitForClose()
 		const invalidRuntime = await FakeRuntime.connect(canvasUrl, 'invalid-token')
 		await invalidRuntime.waitForClose()
 		expect(errorCode(await bridge.request('still-unavailable'))).toBe('unavailable')

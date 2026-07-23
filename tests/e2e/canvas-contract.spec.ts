@@ -124,6 +124,15 @@ test('gets canonical Canvas Runtime context through the real stdio MCP bridge', 
 	await expect(replacementPage.getByText(/Bridge disconnected — reopen/)).toBeVisible({
 		timeout: 5_000,
 	})
+
+	await replacementPage.getByTestId('tools.rectangle').click()
+	await replacementPage.mouse.move(100, 100)
+	await replacementPage.mouse.down()
+	await replacementPage.mouse.move(200, 180)
+	await replacementPage.mouse.up()
+	await expect
+		.poll(() => getRuntimeContext(replacementPage))
+		.toMatchObject({ revision: 1, document: { items: [{ type: 'geo', geo: 'rectangle' }] } })
 })
 
 test('captures transparent Canvas Runtime PNGs through the real MCP bridge', async ({
