@@ -13,3 +13,23 @@ body {
 	position: fixed;
 	inset: 0;
 }
+
+.canvas-bridge-status {
+	position: fixed;
+	right: 12px;
+	bottom: 12px;
+	z-index: 1;
+	border-radius: 999px;
+	padding: 6px 10px;
+	font: 12px/1 system-ui, sans-serif;
+	color: white;
+	background: #5f6368;
+}
+
+.canvas-bridge-status-connected {
+	background: #188038;
+}
+
+.canvas-bridge-status-reconnecting {
+	background: #b06000;
+}

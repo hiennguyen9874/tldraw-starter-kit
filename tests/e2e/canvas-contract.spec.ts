@@ -1,4 +1,7 @@
 import { expect, test } from '@playwright/test'
+import { spawn } from 'node:child_process'
+import { once } from 'node:events'
+import { resolve } from 'node:path'
 
 interface BrowserCanvasTestFacade {
 	getContext(): {
@@ -12,6 +15,62 @@ async function getRuntimeContext(page: import('@playwright/test').Page) {
 	return page.evaluate(
 		() => (window as Window & { canvasTest?: BrowserCanvasTestFacade }).canvasTest?.getContext()
 	)
+}
+
+test('gets canonical Canvas Runtime context through the real stdio MCP bridge', async ({ page }) => {
+	const cli = spawn(process.execPath, [resolve('cli/canvas-mcp.mjs')], {
+		stdio: ['pipe', 'pipe', 'pipe'],
+	})
+	let stderr = ''
+	cli.stderr.setEncoding('utf8')
+	cli.stderr.on('data', (chunk) => {
+		stderr += chunk
+	})
+
+	try {
+		await expect.poll(() => stderr.match(/Canvas Runtime URL: (.+)/)?.[1]).toBeTruthy()
+		const canvasUrl = stderr.match(/Canvas Runtime URL: (.+)/)?.[1]
+		if (!canvasUrl) throw new Error('Canvas MCP CLI did not print a Canvas Runtime URL')
+
+		await page.goto(canvasUrl)
+		await expect(page.getByText('Bridge connected')).toBeVisible()
+		expect(await page.evaluate(() => window.location.hash)).toBe('')
+
+		const response = await sendMcpRequest(cli, {
+			jsonrpc: '2.0',
+			id: 'context-1',
+			method: 'tools/call',
+			params: { name: 'canvas.get_context', arguments: {} },
+		})
+		expect(response).toEqual({
+			jsonrpc: '2.0',
+			id: 'context-1',
+			result: {
+				content: [{ type: 'text', text: JSON.stringify({ revision: 0, document: { items: [] }, contentBounds: null }) }],
+				structuredContent: { revision: 0, document: { items: [] }, contentBounds: null },
+			},
+		})
+	} finally {
+		if (cli.exitCode === null) {
+			const exit = once(cli, 'exit')
+			cli.kill()
+			await exit
+		}
+	}
+})
+
+function sendMcpRequest(
+	cli: ReturnType<typeof spawn>,
+	request: Record<string, unknown>
+): Promise<unknown> {
+	return new Promise((resolveResponse, reject) => {
+		const timeout = setTimeout(() => reject(new Error('Timed out waiting for MCP response')), 5_000)
+		cli.stdout.once('data', (chunk) => {
+			clearTimeout(timeout)
+			resolveResponse(JSON.parse(chunk.toString()))
+		})
+		cli.stdin.write(`${JSON.stringify(request)}\n`)
+	})
 }
 
 test('opens a blank Canvas Runtime without reading legacy storage', async ({ page }) => {

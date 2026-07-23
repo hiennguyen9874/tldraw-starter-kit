@@ -1,4 +1,6 @@
 import { GeoShapeUtil, TextShapeUtil, Tldraw, TLUiOverrides } from 'tldraw'
+import { useState } from 'react'
+import { CanvasBridge, CanvasBridgeStatus } from './canvas/CanvasBridge'
 import { CanvasRuntime } from './canvas/CanvasRuntime'
 
 const canvasRuntimeTools = new Set([
@@ -55,6 +57,8 @@ const overrides: TLUiOverrides = {
 }
 
 function App() {
+	const [bridgeStatus, setBridgeStatus] = useState<CanvasBridgeStatus>('disconnected')
+
 	return (
 		<div className="tldraw-canvas">
 			<Tldraw
@@ -68,6 +72,22 @@ function App() {
 				}}
 				onMount={(editor) => {
 					const runtime = new CanvasRuntime(editor)
+					const bridge = CanvasBridge.connectFromLocation(
+						window.location,
+						(request) => {
+							if (request.tool !== 'canvas.get_context') {
+								throw new Error(`Unsupported Canvas Runtime tool: ${request.tool}`)
+							}
+							return {
+								version: 1,
+								id: request.id,
+								tool: request.tool,
+								ok: true,
+								result: runtime.getContext(),
+							}
+						},
+						setBridgeStatus
+					)
 					const testWindow = window as Window & {
 						canvasTest?: { getContext: () => ReturnType<CanvasRuntime['getContext']> }
 					}
@@ -76,11 +96,15 @@ function App() {
 						: undefined
 					if (testFacade) testWindow.canvasTest = testFacade
 					return () => {
+						bridge?.dispose()
 						runtime.dispose()
 						if (testFacade && testWindow.canvasTest === testFacade) delete testWindow.canvasTest
 					}
 				}}
 			/>
+			<div className={`canvas-bridge-status canvas-bridge-status-${bridgeStatus}`}>
+				Bridge {bridgeStatus}
+			</div>
 		</div>
 	)
 }

@@ -27,6 +27,10 @@ Run the development server with `yarn dev` or `npm run dev`.
 
 Open `http://localhost:5173/` in your browser to see the app.
 
+### Connect an external MCP client
+
+With the Vite app running, start the local bridge with `npm run canvas-mcp`. It prints a one-time Canvas Runtime URL to stderr. Open that URL in a browser; the connection credentials are removed from the address bar after registration. Configure your MCP client to run `npm run canvas-mcp` over stdio and call `canvas.get_context`.
+
 ## Agent overview
 
 With its default configuration, the agent can perform the following actions:
