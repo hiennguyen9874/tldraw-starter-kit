@@ -148,6 +148,41 @@ test('applies a forward-referenced Canvas Item batch through the real MCP bridge
 	})
 })
 
+test('lays out Canvas Items through the real MCP bridge', async ({
+	mcpCanvas: { call, context },
+}) => {
+	await call('create-layout-topology', {
+		expectedRevision: 0,
+		actions: [
+			{ type: 'create', item: { id: 'edge', type: 'arrow', fromId: 'node-a', toId: 'node-b' } },
+			{ type: 'create', item: { id: 'node-a', type: 'geo', geo: 'rectangle', x: 500, y: 100, w: 80, h: 60 } },
+			{ type: 'create', item: { id: 'node-b', type: 'geo', geo: 'ellipse', x: 100, y: 300, w: 100, h: 40 } },
+		],
+	})
+
+	const layout = await call('layout', {
+		expectedRevision: 1,
+		actions: [{ type: 'layout', direction: 'left-to-right', scope: { type: 'all' } }],
+	})
+	expect(layout).toMatchObject({
+		result: { structuredContent: { revision: 2, changedIds: ['node-a', 'node-b', 'edge'], deletedIds: [] } },
+	})
+	expect(await context('layout-context')).toMatchObject({
+		result: {
+			structuredContent: {
+				revision: 2,
+				document: {
+					items: [
+						{ id: 'edge', type: 'arrow', fromId: 'node-a', toId: 'node-b' },
+						{ id: 'node-a', type: 'geo', x: 100, y: 100, w: 80, h: 60 },
+						{ id: 'node-b', type: 'geo', x: 300, y: 100, w: 100, h: 40 },
+					],
+				},
+			},
+		},
+	})
+})
+
 test('deletes direct Canvas Items, including multi-selections, through shared actions', async ({
 	page,
 	mcpCanvas: { call, context },

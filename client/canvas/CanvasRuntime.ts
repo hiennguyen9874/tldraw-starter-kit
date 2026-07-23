@@ -19,7 +19,7 @@ import {
 	Revision,
 	RevisionSchema,
 } from '../../shared/canvas-contract'
-import { proposeCanvasActions } from './proposeCanvasActions'
+import { LayoutDirection, proposeCanvasActions } from './proposeCanvasActions'
 
 export const CANVAS_RUNTIME_STORAGE_KEY = 'canvas-runtime-v1'
 
@@ -92,7 +92,7 @@ export class CanvasRuntime {
 		const proposed = proposeCanvasActions(this.document, input.actions)
 		if ('code' in proposed) return proposed
 
-		this.replaceDocument(proposed.document)
+		this.replaceDocument(proposed.document, proposed.layoutArrowDirections, proposed.changedIds)
 		return ApplyActionsResultSchema.parse({
 			revision: this.revision,
 			changedIds: proposed.changedIds,
@@ -112,26 +112,110 @@ export class CanvasRuntime {
 		this.replaceEditorDocument(this.document, 'ignore')
 	}
 
-	private replaceDocument(document: CanvasDocument) {
+	private replaceDocument(
+		document: CanvasDocument,
+		layoutArrowDirections?: ReadonlyMap<string, LayoutDirection | undefined>,
+		changedIds: readonly string[] = []
+	) {
 		this.editor.markHistoryStoppingPoint('canvas.apply_actions')
-		this.replaceEditorDocument(document, 'record')
-		this.document = document
+		this.document = this.replaceEditorDocument(
+			document,
+			'record',
+			layoutArrowDirections,
+			new Set(changedIds)
+		)
 		this.revision += 1
 		this.persist()
 	}
 
-	private replaceEditorDocument(document: CanvasDocument, history: 'ignore' | 'record') {
+	private replaceEditorDocument(
+		document: CanvasDocument,
+		history: 'ignore' | 'record',
+		layoutArrowDirections?: ReadonlyMap<string, LayoutDirection | undefined>,
+		changedIds = new Set<string>()
+	) {
+		let replacedDocument = document
 		this.isSynchronizing = true
 		try {
 			this.editor.run(() => {
 				this.editor.deleteShapes(this.getSupportedShapes())
-				const shapes = document.items.map((item) => canvasItemToShape(item, document))
+				const shapes = document.items.map((item) =>
+					canvasItemToShape(
+						item,
+						document,
+						layoutArrowDirections?.get(item.id),
+						layoutArrowDirections?.has(item.id) ?? false
+					)
+				)
 				this.editor.createShapes(shapes)
-				createArrowBindings(this.editor, document, shapes)
+				replacedDocument = layoutArrowDirections
+					? this.resizeLayoutFrames(document, changedIds, shapes)
+					: document
+				this.updateFrameShapes(document, replacedDocument, shapes)
+				createArrowBindings(this.editor, replacedDocument, shapes, layoutArrowDirections)
 			}, { history })
 		} finally {
 			this.isSynchronizing = false
 		}
+		return replacedDocument
+	}
+
+	private resizeLayoutFrames(
+		document: CanvasDocument,
+		changedIds: ReadonlySet<string>,
+		shapes: CanvasShape[]
+	): CanvasDocument {
+		const shapesByPublicId = new Map(
+			shapes.flatMap((shape) => {
+				const id = getPublicId(shape as TLShape)
+				return id ? [[id, shape as TLShape] as const] : []
+			})
+		)
+		const itemById = new Map(document.items.map((item) => [item.id, item]))
+		const items = document.items.map((item) => {
+			if (item.type !== 'frame' || !changedIds.has(item.id)) return item
+			const memberBounds = item.memberIds.flatMap((memberId) => {
+				const member = itemById.get(memberId)
+				if (!member || (member.type !== 'geo' && member.type !== 'text')) return []
+				if (member.type === 'geo') return [{ x: member.x, y: member.y, w: member.w, h: member.h }]
+				const shape = shapesByPublicId.get(member.id)
+				if (!shape) return []
+				const bounds = this.editor.getShapePageBounds(shape)
+				return bounds ? [{ x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h }] : []
+			})
+			if (memberBounds.length === 0) return item
+			const minX = Math.min(...memberBounds.map((bounds) => bounds.x))
+			const minY = Math.min(...memberBounds.map((bounds) => bounds.y))
+			const maxX = Math.max(...memberBounds.map((bounds) => bounds.x + bounds.w))
+			const maxY = Math.max(...memberBounds.map((bounds) => bounds.y + bounds.h))
+			return { ...item, x: minX - 80, y: minY - 80, w: maxX - minX + 160, h: maxY - minY + 160 }
+		})
+		return { items }
+	}
+
+	private updateFrameShapes(
+		originalDocument: CanvasDocument,
+		resizedDocument: CanvasDocument,
+		shapes: CanvasShape[]
+	) {
+		const originalFrames = new Map(
+			originalDocument.items.flatMap((item) => (item.type === 'frame' ? [[item.id, item] as const] : []))
+		)
+		const shapesByPublicId = new Map(
+			shapes.flatMap((shape) => {
+				const id = getPublicId(shape as TLShape)
+				return id ? [[id, shape] as const] : []
+			})
+		)
+		const updates = resizedDocument.items.flatMap((item) => {
+			if (item.type !== 'frame') return []
+			const original = originalFrames.get(item.id)
+			const shape = shapesByPublicId.get(item.id)
+			if (!original || !shape || !shape.id || shape.type !== 'frame') return []
+			if (original.x === item.x && original.y === item.y && original.w === item.w && original.h === item.h) return []
+			return [{ id: shape.id, type: 'frame' as const, x: item.x, y: item.y, props: { ...shape.props, w: item.w, h: item.h } }]
+		})
+		if (updates.length > 0) this.editor.updateShapes(updates)
 	}
 
 	private guardCanvasItemShapes() {
@@ -471,7 +555,12 @@ function shapeToCanvasItem(
 	return { id, type: 'arrow', fromId, toId }
 }
 
-function canvasItemToShape(item: CanvasItem, document: CanvasDocument): CanvasShape {
+function canvasItemToShape(
+	item: CanvasItem,
+	document: CanvasDocument,
+	layoutDirection?: LayoutDirection,
+	isLayoutArrow = false
+): CanvasShape {
 	const meta = { canvasItemId: item.id }
 	if (item.type === 'text') {
 		return { id: createShapeId(), type: 'text' as const, x: item.x, y: item.y, props: { richText: toRichText(item.text), autoSize: true }, meta }
@@ -484,8 +573,9 @@ function canvasItemToShape(item: CanvasItem, document: CanvasDocument): CanvasSh
 	}
 	const from = getGeometricItem(document, item.fromId)
 	const to = getGeometricItem(document, item.toId)
-	const start = { x: from.x + from.w / 2, y: from.y + from.h / 2 }
-	const end = { x: to.x + to.w / 2, y: to.y + to.h / 2 }
+		const anchors = getArrowBindingAnchors(from, to, layoutDirection, isLayoutArrow)
+	const start = getAnchorPoint(from, anchors.start)
+	const end = getAnchorPoint(to, anchors.end)
 	const x = Math.min(start.x, end.x)
 	const y = Math.min(start.y, end.y)
 	return { id: createShapeId(), type: 'arrow' as const, x, y, props: { kind: 'arc', start: { x: start.x - x, y: start.y - y }, end: { x: end.x - x, y: end.y - y }, bend: 0, color: 'black', fill: 'none', dash: 'solid', size: 'm', arrowheadStart: 'none', arrowheadEnd: 'arrow', font: 'draw', richText: toRichText(''), labelPosition: 0.5, labelColor: 'black', scale: 1, elbowMidPoint: 0.5 }, meta } as unknown as CanvasShape
@@ -494,7 +584,8 @@ function canvasItemToShape(item: CanvasItem, document: CanvasDocument): CanvasSh
 function createArrowBindings(
 	editor: Editor,
 	document: CanvasDocument,
-	shapes: CanvasShape[]
+	shapes: CanvasShape[],
+	layoutArrowDirections?: ReadonlyMap<string, LayoutDirection | undefined>
 ) {
 	const shapeIds = new Map(
 		shapes.flatMap((shape) => {
@@ -508,11 +599,51 @@ function createArrowBindings(
 		const fromId = shapeIds.get(item.fromId)
 		const toId = shapeIds.get(item.toId)
 		if (!arrowId || !fromId || !toId) throw new Error(`Canvas Runtime arrow ${item.id} has no native endpoint`)
+		const from = getGeometricItem(document, item.fromId)
+		const to = getGeometricItem(document, item.toId)
+		const anchors = getArrowBindingAnchors(
+			from,
+			to,
+			layoutArrowDirections?.get(item.id),
+			layoutArrowDirections?.has(item.id) ?? false
+		)
 		editor.createBindings([
-			{ type: 'arrow', fromId: arrowId, toId: fromId, props: { terminal: 'start', normalizedAnchor: { x: 0.5, y: 0.5 }, isExact: false, isPrecise: true, snap: 'edge' } },
-			{ type: 'arrow', fromId: arrowId, toId, props: { terminal: 'end', normalizedAnchor: { x: 0.5, y: 0.5 }, isExact: false, isPrecise: true, snap: 'edge' } },
+			{ type: 'arrow', fromId: arrowId, toId: fromId, props: { terminal: 'start', normalizedAnchor: anchors.start, isExact: false, isPrecise: true, snap: 'edge' } },
+			{ type: 'arrow', fromId: arrowId, toId, props: { terminal: 'end', normalizedAnchor: anchors.end, isExact: false, isPrecise: true, snap: 'edge' } },
 		])
 	}
+}
+
+function getArrowBindingAnchors(
+	from: GeometricCanvasItem,
+	to: GeometricCanvasItem,
+	layoutDirection?: LayoutDirection,
+	isLayoutArrow = false
+) {
+	if (!isLayoutArrow) return { start: { x: 0.5, y: 0.5 }, end: { x: 0.5, y: 0.5 } }
+	if (layoutDirection === 'left-to-right') {
+		return { start: { x: 1, y: 0.5 }, end: { x: 0, y: 0.5 } }
+	}
+	if (layoutDirection === 'top-to-bottom') {
+		return { start: { x: 0.5, y: 1 }, end: { x: 0.5, y: 0 } }
+	}
+
+	const fromCenter = { x: from.x + from.w / 2, y: from.y + from.h / 2 }
+	const toCenter = { x: to.x + to.w / 2, y: to.y + to.h / 2 }
+	const deltaX = toCenter.x - fromCenter.x
+	const deltaY = toCenter.y - fromCenter.y
+	if (Math.abs(deltaX) >= Math.abs(deltaY)) {
+		return deltaX >= 0
+			? { start: { x: 1, y: 0.5 }, end: { x: 0, y: 0.5 } }
+			: { start: { x: 0, y: 0.5 }, end: { x: 1, y: 0.5 } }
+	}
+	return deltaY >= 0
+		? { start: { x: 0.5, y: 1 }, end: { x: 0.5, y: 0 } }
+		: { start: { x: 0.5, y: 0 }, end: { x: 0.5, y: 1 } }
+}
+
+function getAnchorPoint(item: GeometricCanvasItem, anchor: { x: number; y: number }) {
+	return { x: item.x + item.w * anchor.x, y: item.y + item.h * anchor.y }
 }
 
 function getGeometricItem(document: CanvasDocument, id: string): GeometricCanvasItem {
