@@ -16,7 +16,10 @@ interface BrowserEditor {
 		rotation: number
 		props: Record<string, unknown>
 	}>
+	createShapes(shapes: Array<Record<string, unknown>>): void
 	updateShapes(shapes: Array<Record<string, unknown>>): void
+	select(...shapeIds: string[]): void
+	setCamera(camera: { x: number; y: number; z: number }): void
 	markHistoryStoppingPoint(name: string): void
 	undo(): void
 	redo(): void
@@ -219,6 +222,67 @@ test('assigns a unique public ID when a Canvas Item is duplicated', async ({ pag
 			})
 		)
 		.toEqual({ revision: 2, itemCount: 2, uniqueIds: 2 })
+})
+
+test('reports tight rendered-ink bounds independently of viewport and selection', async ({ page }) => {
+	await page.goto('/')
+
+	const initialBounds = await page.evaluate(() => {
+		const runtime = (window as Window & { canvasRuntime?: BrowserCanvasRuntime }).canvasRuntime!
+		const editor = runtime.editor
+		editor.createShapes([
+			{
+				id: 'shape:rendered-rectangle',
+				type: 'geo',
+				x: 100,
+				y: 100,
+				props: { geo: 'rectangle', w: 100, h: 80, richText: { type: 'doc', content: [] } },
+			},
+			{
+				id: 'shape:rendered-ellipse',
+				type: 'geo',
+				x: 260,
+				y: 120,
+				props: { geo: 'ellipse', w: 100, h: 80, richText: { type: 'doc', content: [] } },
+			},
+			{
+				id: 'shape:rendered-diamond',
+				type: 'geo',
+				x: 420,
+				y: 100,
+				props: { geo: 'diamond', w: 100, h: 80, richText: { type: 'doc', content: [] } },
+			},
+			{
+				id: 'shape:rendered-text',
+				type: 'text',
+				x: 100,
+				y: 240,
+				props: {
+					autoSize: true,
+					richText: {
+						type: 'doc',
+						content: [
+							{ type: 'paragraph', content: [{ type: 'text', text: 'First line' }] },
+							{ type: 'paragraph', content: [{ type: 'text', text: 'Second line' }] },
+						],
+					},
+				},
+			},
+		])
+		return runtime.getContext().contentBounds
+	})
+
+	expect(initialBounds).toEqual({ x: 96, y: 96, w: 428, h: 208 })
+
+	const boundsAfterViewportAndSelectionChange = await page.evaluate(() => {
+		const runtime = (window as Window & { canvasRuntime?: BrowserCanvasRuntime }).canvasRuntime!
+		const editor = runtime.editor
+		const shapes = editor.getCurrentPageShapes()
+		editor.select(...shapes.map((shape) => shape.id))
+		editor.setCamera({ x: -500, y: -400, z: 2 })
+		return runtime.getContext().contentBounds
+	})
+	expect(boundsAfterViewportAndSelectionChange).toEqual(initialBounds)
 })
 
 test('persists an edit when the page reloads before trailing synchronization', async ({ page }) => {

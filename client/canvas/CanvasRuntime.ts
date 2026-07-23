@@ -19,6 +19,8 @@ import {
 export const CANVAS_RUNTIME_STORAGE_KEY = 'canvas-runtime-v1'
 
 const SUPPORTED_GEOS = new Set<string>(['rectangle', 'ellipse', 'diamond'])
+// Default geo strokes are 3.5 units wide and their draw-style paths extend slightly beyond the model box.
+const RENDERED_GEO_INK_MARGIN = 4
 
 interface CanvasRuntimeStorage {
 	getItem(key: string): string | null
@@ -211,8 +213,27 @@ export class CanvasRuntime {
 	}
 
 	private getContentBounds() {
-		const bounds = this.editor.getShapesPageBounds(this.getSupportedShapes().map((shape) => shape.id))
-		return bounds ? { x: bounds.x, y: bounds.y, w: bounds.w, h: bounds.h } : null
+		const shapeBounds = this.getSupportedShapes().flatMap((shape) => {
+			const bounds = this.editor.getShapePageBounds(shape)
+			if (!bounds) return []
+
+			const margin = shape.type === 'geo' ? RENDERED_GEO_INK_MARGIN : 0
+			return [
+				{
+					x: bounds.x - margin,
+					y: bounds.y - margin,
+					w: bounds.w + margin * 2,
+					h: bounds.h + margin * 2,
+				},
+			]
+		})
+		if (shapeBounds.length === 0) return null
+
+		const minX = Math.min(...shapeBounds.map((bounds) => bounds.x))
+		const minY = Math.min(...shapeBounds.map((bounds) => bounds.y))
+		const maxX = Math.max(...shapeBounds.map((bounds) => bounds.x + bounds.w))
+		const maxY = Math.max(...shapeBounds.map((bounds) => bounds.y + bounds.h))
+		return { x: minX, y: minY, w: maxX - minX, h: maxY - minY }
 	}
 }
 
