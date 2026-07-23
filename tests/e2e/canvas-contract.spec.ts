@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test as base } from '@playwright/test'
 import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { resolve } from 'node:path'
@@ -17,83 +17,108 @@ async function getRuntimeContext(page: import('@playwright/test').Page) {
 	)
 }
 
-test('gets canonical Canvas Runtime context through the real stdio MCP bridge', async ({ page }) => {
-	const cli = spawn(process.execPath, [resolve('cli/canvas-mcp.mjs')], {
+function startMcpCli() {
+	return spawn(process.execPath, [resolve('cli/canvas-mcp.mjs')], {
 		stdio: ['pipe', 'pipe', 'pipe'],
 		env: { ...process.env, CANVAS_URL: 'http://127.0.0.1:4173/' },
 	})
-	let stderr = ''
-	cli.stderr.setEncoding('utf8')
-	cli.stderr.on('data', (chunk) => {
-		stderr += chunk
-	})
+}
 
-	try {
-		await expect.poll(() => stderr.match(/Canvas Runtime URL: (.+)/)?.[1]).toBeTruthy()
-		const canvasUrl = stderr.match(/Canvas Runtime URL: (.+)/)?.[1]
-		if (!canvasUrl) throw new Error('Canvas MCP CLI did not print a Canvas Runtime URL')
+type McpCli = ReturnType<typeof startMcpCli>
 
-		await page.goto(canvasUrl)
-		await expect(page.getByText('Bridge connected')).toBeVisible()
-		expect(await page.evaluate(() => window.location.hash)).toBe('')
+interface McpCanvasFixture {
+	cli: McpCli
+	canvasUrl: string
+	call(id: string, arguments_: object): Promise<unknown>
+	context(id: string): Promise<unknown>
+}
 
-		const response = await sendMcpRequest(cli, {
-			jsonrpc: '2.0',
-			id: 'context-1',
-			method: 'tools/call',
-			params: { name: 'canvas.get_context', arguments: {} },
-		})
-		expect(response).toEqual({
-			jsonrpc: '2.0',
-			id: 'context-1',
-			result: {
-				content: [{ type: 'text', text: JSON.stringify({ revision: 0, document: { items: [] }, contentBounds: null }) }],
-				structuredContent: { revision: 0, document: { items: [] }, contentBounds: null },
-			},
+const test = base.extend<{ mcpCanvas: McpCanvasFixture }>({
+	mcpCanvas: async ({ page }, use) => {
+		const cli = startMcpCli()
+		let stderr = ''
+		cli.stderr.setEncoding('utf8')
+		cli.stderr.on('data', (chunk) => {
+			stderr += chunk
 		})
 
-		const replacementPage = await page.context().newPage()
-		await replacementPage.goto(canvasUrl)
-		await expect(replacementPage.getByText('Bridge connected')).toBeVisible()
-		await expect(page.getByText(/Bridge disconnected — reopen/)).toBeVisible()
-		await replacementPage.waitForTimeout(2_000)
-		await expect(replacementPage.getByText('Bridge connected')).toBeVisible()
+		try {
+			await expect.poll(() => stderr.match(/Canvas Runtime URL: (.+)/)?.[1]).toBeTruthy()
+			const canvasUrl = stderr.match(/Canvas Runtime URL: (.+)/)?.[1]
+			if (!canvasUrl) throw new Error('Canvas MCP CLI did not print a Canvas Runtime URL')
+			await page.goto(canvasUrl)
+			await expect(page.getByText('Bridge connected')).toBeVisible()
 
-		const exit = once(cli, 'exit')
-		cli.kill()
-		await exit
-		await expect(replacementPage.getByText('Bridge reconnecting')).toBeVisible()
-		await expect(replacementPage.getByText(/Bridge disconnected — reopen/)).toBeVisible({
-			timeout: 5_000,
-		})
-	} finally {
-		if (cli.exitCode === null && cli.signalCode === null) {
-			const exit = once(cli, 'exit')
-			cli.kill()
-			await exit
+			await use({
+				cli,
+				canvasUrl,
+				call: (id, arguments_) =>
+					sendMcpRequest(cli, {
+						jsonrpc: '2.0',
+						id,
+						method: 'tools/call',
+						params: { name: 'canvas.apply_actions', arguments: arguments_ },
+					}),
+				context: (id) =>
+					sendMcpRequest(cli, {
+						jsonrpc: '2.0',
+						id,
+						method: 'tools/call',
+						params: { name: 'canvas.get_context', arguments: {} },
+					}),
+			})
+		} finally {
+			await stopMcpCli(cli)
 		}
-	}
+	},
 })
 
-test('applies a forward-referenced Canvas Item batch through the real MCP bridge', async ({ page }) => {
-	const cli = spawn(process.execPath, [resolve('cli/canvas-mcp.mjs')], {
-		stdio: ['pipe', 'pipe', 'pipe'],
-		env: { ...process.env, CANVAS_URL: 'http://127.0.0.1:4173/' },
+async function stopMcpCli(cli: McpCli) {
+	if (cli.exitCode !== null || cli.signalCode !== null) return
+	const exit = once(cli, 'exit')
+	cli.kill()
+	await exit
+}
+
+test('gets canonical Canvas Runtime context through the real stdio MCP bridge', async ({
+	page,
+	mcpCanvas: { cli, canvasUrl },
+}) => {
+	expect(await page.evaluate(() => window.location.hash)).toBe('')
+
+	const response = await sendMcpRequest(cli, {
+		jsonrpc: '2.0',
+		id: 'context-1',
+		method: 'tools/call',
+		params: { name: 'canvas.get_context', arguments: {} },
 	})
-	let stderr = ''
-	cli.stderr.setEncoding('utf8')
-	cli.stderr.on('data', (chunk) => {
-		stderr += chunk
+	expect(response).toEqual({
+		jsonrpc: '2.0',
+		id: 'context-1',
+		result: {
+			content: [{ type: 'text', text: JSON.stringify({ revision: 0, document: { items: [] }, contentBounds: null }) }],
+			structuredContent: { revision: 0, document: { items: [] }, contentBounds: null },
+		},
 	})
 
-	try {
-		await expect.poll(() => stderr.match(/Canvas Runtime URL: (.+)/)?.[1]).toBeTruthy()
-		const canvasUrl = stderr.match(/Canvas Runtime URL: (.+)/)?.[1]
-		if (!canvasUrl) throw new Error('Canvas MCP CLI did not print a Canvas Runtime URL')
-		await page.goto(canvasUrl)
-		await expect(page.getByText('Bridge connected')).toBeVisible()
+	const replacementPage = await page.context().newPage()
+	await replacementPage.goto(canvasUrl)
+	await expect(replacementPage.getByText('Bridge connected')).toBeVisible()
+	await expect(page.getByText(/Bridge disconnected — reopen/)).toBeVisible()
+	await replacementPage.waitForTimeout(2_000)
+	await expect(replacementPage.getByText('Bridge connected')).toBeVisible()
 
-		const response = await sendMcpRequest(cli, {
+	await stopMcpCli(cli)
+	await expect(replacementPage.getByText('Bridge reconnecting')).toBeVisible()
+	await expect(replacementPage.getByText(/Bridge disconnected — reopen/)).toBeVisible({
+		timeout: 5_000,
+	})
+})
+
+test('applies a forward-referenced Canvas Item batch through the real MCP bridge', async ({
+	mcpCanvas: { cli },
+}) => {
+	const response = await sendMcpRequest(cli, {
 			jsonrpc: '2.0',
 			id: 'actions-1',
 			method: 'tools/call',
@@ -109,74 +134,49 @@ test('applies a forward-referenced Canvas Item batch through the real MCP bridge
 					],
 				},
 			},
-		})
-		expect(response).toMatchObject({
-			result: {
-				structuredContent: {
-					revision: 1,
-					changedIds: ['group', 'edge', 'node-a', 'node-b'],
-					deletedIds: [],
-				},
+	})
+	expect(response).toMatchObject({
+		result: {
+			structuredContent: {
+				revision: 1,
+				changedIds: ['group', 'edge', 'node-a', 'node-b'],
+				deletedIds: [],
 			},
-		})
-	} finally {
-		if (cli.exitCode === null && cli.signalCode === null) {
-			const exit = once(cli, 'exit')
-			cli.kill()
-			await exit
-		}
-	}
+		},
+	})
 })
 
-test('rejects invalid and stale batches without creating a Canvas Runtime history entry', async ({ page }) => {
-	const cli = spawn(process.execPath, [resolve('cli/canvas-mcp.mjs')], { stdio: ['pipe', 'pipe', 'pipe'], env: { ...process.env, CANVAS_URL: 'http://127.0.0.1:4173/' } })
-	let stderr = ''
-	cli.stderr.setEncoding('utf8')
-	cli.stderr.on('data', (chunk) => { stderr += chunk })
-	const call = (id: string, arguments_: object) => sendMcpRequest(cli, { jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'canvas.apply_actions', arguments: arguments_ } })
-	const context = (id: string) => sendMcpRequest(cli, { jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'canvas.get_context', arguments: {} } })
+test('rejects invalid and stale batches without creating a Canvas Runtime history entry', async ({
+	page,
+	mcpCanvas: { call, context },
+}) => {
+	await call('create', { expectedRevision: 0, actions: [
+		{ type: 'create', item: { id: 'label', type: 'text', x: 0, y: 0, text: 'Draft' } },
+		{ type: 'create', item: { id: 'obsolete', type: 'text', x: 0, y: 100, text: 'Remove me' } },
+	] })
+	const updated = await call('update-delete', { expectedRevision: 1, actions: [
+		{ type: 'update', id: 'label', patch: { type: 'text', text: 'Published' } },
+		{ type: 'delete', id: 'obsolete' },
+	] })
+	expect(updated).toMatchObject({ result: { structuredContent: { revision: 2, changedIds: ['label'], deletedIds: ['obsolete'] } } })
 
-	try {
-		await expect.poll(() => stderr.match(/Canvas Runtime URL: (.+)/)?.[1]).toBeTruthy()
-		const canvasUrl = stderr.match(/Canvas Runtime URL: (.+)/)?.[1]
-		if (!canvasUrl) throw new Error('Canvas MCP CLI did not print a Canvas Runtime URL')
-		await page.goto(canvasUrl)
-		await expect(page.getByText('Bridge connected')).toBeVisible()
+	const invalid = await call('invalid', { expectedRevision: 2, actions: [
+		{ type: 'create', item: { id: 'broken', type: 'arrow', fromId: 'missing', toId: 'label' } },
+	] })
+	expect(invalid).toMatchObject({ result: { isError: true, structuredContent: { error: { code: 'validation', issues: [{ actionIndex: 0, field: 'item.fromId' }] } } } })
+	const invalidField = await call('invalid-field', { expectedRevision: 2, actions: [{ type: 'create', item: { id: 'bad-size', type: 'geo', geo: 'rectangle', x: 0, y: 0, w: -1, h: -1 } }] })
+	expect(invalidField).toMatchObject({ result: { isError: true, structuredContent: { error: { code: 'validation', issues: [{ actionIndex: 0, field: 'item.w' }] } } } })
+	expect((invalidField as { result: { structuredContent: { error: { issues: unknown[] } } } }).result.structuredContent.error.issues).toHaveLength(1)
+	expect(await context('unchanged')).toMatchObject({ result: { structuredContent: { revision: 2, document: { items: [{ id: 'label', type: 'text', text: 'Published', x: 0, y: 0 }] } } } })
 
-		await call('create', { expectedRevision: 0, actions: [
-			{ type: 'create', item: { id: 'label', type: 'text', x: 0, y: 0, text: 'Draft' } },
-			{ type: 'create', item: { id: 'obsolete', type: 'text', x: 0, y: 100, text: 'Remove me' } },
-		] })
-		const updated = await call('update-delete', { expectedRevision: 1, actions: [
-			{ type: 'update', id: 'label', patch: { type: 'text', text: 'Published' } },
-			{ type: 'delete', id: 'obsolete' },
-		] })
-		expect(updated).toMatchObject({ result: { structuredContent: { revision: 2, changedIds: ['label'], deletedIds: ['obsolete'] } } })
-
-		const invalid = await call('invalid', { expectedRevision: 2, actions: [
-			{ type: 'create', item: { id: 'broken', type: 'arrow', fromId: 'missing', toId: 'label' } },
-		] })
-		expect(invalid).toMatchObject({ result: { isError: true, structuredContent: { error: { code: 'validation', issues: [{ actionIndex: 0, field: 'item.fromId' }] } } } })
-		const invalidField = await call('invalid-field', { expectedRevision: 2, actions: [{ type: 'create', item: { id: 'bad-size', type: 'geo', geo: 'rectangle', x: 0, y: 0, w: -1, h: -1 } }] })
-		expect(invalidField).toMatchObject({ result: { isError: true, structuredContent: { error: { code: 'validation', issues: [{ actionIndex: 0, field: 'item.w' }] } } } })
-		expect((invalidField as { result: { structuredContent: { error: { issues: unknown[] } } } }).result.structuredContent.error.issues).toHaveLength(1)
-		expect(await context('unchanged')).toMatchObject({ result: { structuredContent: { revision: 2, document: { items: [{ id: 'label', type: 'text', text: 'Published', x: 0, y: 0 }] } } } })
-
-		await page.keyboard.press('Control+z')
-		expect(await context('undo')).toMatchObject({ result: { structuredContent: { revision: 3, document: { items: [{ id: 'label', type: 'text', text: 'Draft', x: 0, y: 0 }, { id: 'obsolete', type: 'text', text: 'Remove me', x: 0, y: 100 }] } } } })
-		const stale = await call('stale', { expectedRevision: 0, actions: [{ type: 'delete', id: 'label' }] })
-		expect(stale).toMatchObject({ result: { isError: true, structuredContent: { error: { code: 'stale_revision', expectedRevision: 0, currentRevision: 3 } } } })
-	} finally {
-		if (cli.exitCode === null && cli.signalCode === null) {
-			const exit = once(cli, 'exit')
-			cli.kill()
-			await exit
-		}
-	}
+	await page.keyboard.press('Control+z')
+	expect(await context('undo')).toMatchObject({ result: { structuredContent: { revision: 3, document: { items: [{ id: 'label', type: 'text', text: 'Draft', x: 0, y: 0 }, { id: 'obsolete', type: 'text', text: 'Remove me', x: 0, y: 100 }] } } } })
+	const stale = await call('stale', { expectedRevision: 0, actions: [{ type: 'delete', id: 'label' }] })
+	expect(stale).toMatchObject({ result: { isError: true, structuredContent: { error: { code: 'stale_revision', expectedRevision: 0, currentRevision: 3 } } } })
 })
 
 function sendMcpRequest(
-	cli: ReturnType<typeof spawn>,
+	cli: McpCli,
 	request: Record<string, unknown>
 ): Promise<unknown> {
 	return new Promise((resolveResponse, reject) => {
