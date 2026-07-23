@@ -1,5 +1,6 @@
 import { GeoShapeUtil, TextShapeUtil, Tldraw, TLUiOverrides } from 'tldraw'
 import { useState } from 'react'
+import { CanvasToolRequest, CanvasToolResponse } from '../shared/canvas-contract'
 import { CanvasBridge, CanvasBridgeStatus } from './canvas/CanvasBridge'
 import { CanvasRuntime } from './canvas/CanvasRuntime'
 
@@ -41,6 +42,15 @@ class CanvasTextShapeUtil extends TextShapeUtil {
 	override hideRotateHandle() {
 		return true
 	}
+}
+
+type RuntimeRequest = Extract<CanvasToolRequest, { tool: 'canvas.apply_actions' | 'canvas.capture' }>
+type RuntimeOutcome = ReturnType<CanvasRuntime['applyActions']> | Awaited<ReturnType<CanvasRuntime['capture']>>
+
+function runtimeResponse(request: RuntimeRequest, outcome: RuntimeOutcome): CanvasToolResponse {
+	return 'code' in outcome
+		? { version: 1, id: request.id, tool: request.tool, ok: false, error: outcome }
+		: { version: 1, id: request.id, tool: request.tool, ok: true, result: outcome } as CanvasToolResponse
 }
 
 const overrides: TLUiOverrides = {
@@ -85,16 +95,10 @@ function App() {
 								}
 							}
 							if (request.tool === 'canvas.apply_actions') {
-								const outcome = runtime.applyActions(request.input)
-								return 'code' in outcome
-									? { version: 1, id: request.id, tool: request.tool, ok: false as const, error: outcome }
-									: { version: 1, id: request.id, tool: request.tool, ok: true as const, result: outcome }
+								return runtimeResponse(request, runtime.applyActions(request.input))
 							}
 							if (request.tool === 'canvas.capture') {
-								const outcome = await runtime.capture(request.input)
-								return 'code' in outcome
-									? { version: 1, id: request.id, tool: request.tool, ok: false as const, error: outcome }
-									: { version: 1, id: request.id, tool: request.tool, ok: true as const, result: outcome }
+								return runtimeResponse(request, await runtime.capture(request.input))
 							}
 							return {
 								version: 1,

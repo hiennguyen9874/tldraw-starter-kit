@@ -155,7 +155,7 @@ export class CanvasRuntime {
 
 	private async renderCapture(rect: Rect) {
 		const shapes = this.getSupportedShapes()
-		if (shapes.length === 0) return transparentPngBlob()
+		if (shapes.length === 0) return transparentPngBlob(rect.w, rect.h)
 		const { blob } = await this.editor.toImage(shapes, {
 			format: 'png',
 			bounds: new Box(rect.x, rect.y, rect.w, rect.h),
@@ -750,10 +750,10 @@ async function blobToBase64(blob: Blob) {
 	return btoa(binary)
 }
 
-function transparentPngBlob() {
+function transparentPngBlob(width: number, height: number) {
 	const canvas = document.createElement('canvas')
-	canvas.width = 1
-	canvas.height = 1
+	canvas.width = width
+	canvas.height = height
 	return new Promise<Blob>((resolve, reject) =>
 		canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error('Could not encode transparent PNG'))), 'image/png')
 	)

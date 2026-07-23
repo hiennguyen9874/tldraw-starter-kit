@@ -142,6 +142,13 @@ test('captures transparent Canvas Runtime PNGs through the real MCP bridge', asy
 	expect(pngDimensions(captureData(empty))).toEqual({ width: 1, height: 1 })
 	expect(await pngPixelAlpha(page, captureData(empty))).toBe(0)
 
+	const emptyClipped = await tool('capture-empty-clipped', 'canvas.capture', { rect: { x: 1, y: 2, w: 3, h: 4 } })
+	expect(emptyClipped).toMatchObject({
+		result: { structuredContent: { revision: 0, rect: { x: 1, y: 2, w: 3, h: 4 } } },
+	})
+	expect(pngDimensions(captureData(emptyClipped))).toEqual({ width: 3, height: 4 })
+	expect(await pngPixelAlpha(page, captureData(emptyClipped))).toBe(0)
+
 	await call('create-capture-node', {
 		expectedRevision: 0,
 		actions: [
